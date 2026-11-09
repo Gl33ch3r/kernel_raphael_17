@@ -1,17 +1,24 @@
 #!/usr/bin/env bash
 # All-in-one Raphael branch 17 build: Boolx Clang 22, NetHunter, 88x2bu,
 # KernelSU-Next legacy manual hooks, external DTC and boot.img repacking.
-#drivers/kernelsu/Kbuild:135: "KSU_GIT_VERSION not defined! It is better to make KernelSU-Next a git repository!"
 set -Eeuo pipefail
 
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 
-if [[ ${1:-} == --help ]]; then
+show_help() {
     cat <<'EOF'
-Usage: ./build.sh [make targets/options ...]
+Usage: ./build.sh [--ksu] [--nethunter] [make targets/options ...]
 
-Defaults: raphael_defconfig, out/, all + Image.gz, Clang 22, NetHunter kernel
-support, built-in 88x2bu USB Wi-Fi and KernelSU-Next legacy root support.
+Defaults: raphael_defconfig, out/, all + Image.gz, Clang 22, built-in 88x2bu.
+KernelSU-Next and NetHunter are disabled unless their flags are supplied.
+Options:
+  --ksu          Download/integrate KernelSU-Next legacy with manual hooks
+  --nethunter    Enable the NetHunter kernel configuration profile
+  --bootimg-only Package an existing compiled kernel using STOCK_BOOT_IMG
+  --wifi-diagnose Collect adapter diagnostics through adb
+  --help, -h     Show this help
+Feature flags can be combined and may appear before or after make targets.
+They cannot be used with --bootimg-only or --wifi-diagnose.
 Environment:
   TOOLCHAIN  LLVM 22 installation directory (default: ./toolchain/clang22)
   OUT_DIR    Build directory (default: out, relative to the source tree)
@@ -23,6 +30,9 @@ Environment:
 
 Examples:
   ./build.sh
+  ./build.sh --ksu
+  ./build.sh --nethunter
+  ./build.sh --ksu --nethunter
   TOOLCHAIN=/opt/clang-22 JOBS=8 ./build.sh
   ./build.sh menuconfig
   ./build.sh --wifi-diagnose
@@ -32,12 +42,15 @@ Examples:
 
 Missing toolchains are downloaded from the Boolx-22 GitHub release.
 The pinned 88x2bu driver is downloaded and enabled for Archer T3U Plus (2357:0138).
-Official KernelSU-Next legacy is pinned for this 4.14 kernel, with manual hooks.
+With --ksu, official KernelSU-Next legacy is pinned for this 4.14 kernel.
 All source/configuration fixes and boot.img packaging are embedded in this file;
 copy only build.sh into the root of a complete branch 17 checkout to use it.
-NetHunter enables chroot IPC, USB gadgets/serial, USB Bluetooth, mac80211,
+With --nethunter, enable chroot IPC, USB gadgets/serial, USB Bluetooth, mac80211,
 and packet filtering. The Kali rootfs and Android apps are installed separately.
-Resolved NetHunter settings are recorded in out/nethunter-config.txt.
+Enabled NetHunter settings are recorded in out/nethunter-config.txt.
+Repeat the desired flags on every build; changing flags restores pre-feature
+settings and preserves unrelated configuration edits. Old configurations are
+backed up when migrating from the previous always-enabled script.
 Requires a Linux x86_64 host.
 Debian/Ubuntu host dependencies:
   build-essential bc bison flex libssl-dev libelf-dev zlib1g-dev
@@ -50,7 +63,31 @@ Use a template from the same Raphael ROM. Its ramdisk and device trees are
 preserved. magiskboot is downloaded automatically; MAGISKBOOT can override it.
 ROM-specific image signing is separate.
 EOF
-    exit 0
+}
+
+WITH_KSU=0
+WITH_NETHUNTER=0
+MODE=build
+make_options=()
+while (( $# )); do
+    case "$1" in
+        --ksu) WITH_KSU=1 ;;
+        --nethunter) WITH_NETHUNTER=1 ;;
+        --help|-h) show_help; exit 0 ;;
+        --bootimg-only|--wifi-diagnose)
+            [[ $MODE == build || $MODE == "${1#--}" ]] || die 'Choose only one build mode.'
+            MODE=${1#--}
+            ;;
+        --) shift; make_options+=("$@"); break ;;
+        *) make_options+=("$1") ;;
+    esac
+    shift
+done
+set -- "${make_options[@]}"
+if [[ $MODE != build ]]; then
+    (( WITH_KSU == 0 && WITH_NETHUNTER == 0 )) ||
+        die '--ksu and --nethunter require a build; they cannot change an already compiled kernel or run diagnostics.'
+    (( $# == 0 )) || die "--$MODE does not accept make targets/options."
 fi
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
@@ -91,7 +128,7 @@ wifi_diagnose() {
     printf '\nDiagnostic report saved to: %s\n' "$log"
 }
 
-if [[ ${1:-} == --wifi-diagnose ]]; then
+if [[ $MODE == wifi-diagnose ]]; then
     wifi_diagnose
     exit 0
 fi
@@ -110,14 +147,13 @@ OUT_DIR=$(cd -- "$OUT_DIR" && pwd -P)
 
 # A template beside the script enables packaging on a default build.
 if [[ -z ${STOCK_BOOT_IMG:-} && -s $ROOT/stock_boot.img ]] &&
-   [[ $# == 0 || ${1:-} == --bootimg-only ]]; then
+   (( $# == 0 )); then
     STOCK_BOOT_IMG="$ROOT/stock_boot.img"
 fi
 
 BOOTIMG_ONLY=0
-if [[ ${1:-} == --bootimg-only ]]; then
+if [[ $MODE == bootimg-only ]]; then
     BOOTIMG_ONLY=1
-    shift
     (( $# == 0 )) || die '--bootimg-only does not accept make targets.'
     [[ -n ${STOCK_BOOT_IMG:-} ]] || die 'Set STOCK_BOOT_IMG to a working boot.img from the same ROM.'
 fi
@@ -460,19 +496,6 @@ if include not in text:
     if at < 0:
         sys.exit('Error: unexpected drivers/Kconfig layout.')
     path.write_text(text[:at] + include + '\n\n' + text[at:])
-path = root / 'arch/arm64/configs/raphael_defconfig'
-text = path.read_text()
-for option, enabled in [('KSU', True), ('KSU_MANUAL_HOOK', True), ('KSU_DEBUG', False), ('KSU_KPROBES_HOOK', False), ('KSU_SYSCALL_TABLE_HOOK', False),
-                        ('KPROBES', True), ('KRETPROBES', True), ('KPROBE_EVENTS', True),
-                        ('STATIC_USERMODEHELPER', False)]:
-    pattern = rf'^(?:CONFIG_{option}=.*|# CONFIG_{option} is not set)$'
-    line = f'CONFIG_{option}=y' if enabled else f'# CONFIG_{option} is not set'
-    if re.search(pattern, text, re.M):
-        text = re.sub(pattern, line, text, flags=re.M)
-    else:
-        text = text.rstrip() + '\n' + line + '\n'
-text = re.sub(r'^CONFIG_STATIC_USERMODEHELPER_PATH=.*\n?', '', text, flags=re.M)
-path.write_text(text)
 (root / 'KernelSU-Next/RAPHAEL_UPSTREAM').write_text(
     'https://github.com/KernelSU-Next/KernelSU-Next/tree/legacy\n'
     'b933b1f728116a456fbebf27b6a8772a640cdf23\n'
@@ -480,7 +503,9 @@ path.write_text(text)
 PY
 )
 
-setup_kernelsu_next
+if (( WITH_KSU )); then
+    setup_kernelsu_next
+fi
 
 
 DEFCONFIG=${DEFCONFIG:-raphael_defconfig}
@@ -496,8 +521,10 @@ args=(O="$OUT_DIR" ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS="$LLVM_IAS"
       DTC_EXT="$DTC_EXT"
       CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
       CC="$TOOLCHAIN/clang" LD="$TOOLCHAIN/ld.lld"
-      HOSTCC=gcc HOSTCXX=g++ PYTHON=python3
-      KSU_VERSION_OVERRIDE=33318 KSU_VERSION_TAG_OVERRIDE=v3.4.0-legacy-b933b1f)
+      HOSTCC=gcc HOSTCXX=g++ PYTHON=python3)
+if (( WITH_KSU )); then
+    args+=(KSU_VERSION_OVERRIDE=33318 KSU_VERSION_TAG_OVERRIDE=v3.4.0-legacy-b933b1f)
+fi
 export KBUILD_BUILD_USER=${KBUILD_BUILD_USER:-$(id -un)}
 export KBUILD_BUILD_HOST=${KBUILD_BUILD_HOST:-$(hostname)}
 compiler_version=$("$TOOLCHAIN/clang" --version)
@@ -571,28 +598,158 @@ verify_nethunter_config() {
     printf 'NetHunter kernel profile verified: %s\n' "$report"
 }
 
-# Keep standalone defconfig builds and existing output directories in sync.
-apply_nethunter_config "$ROOT/arch/arm64/configs/$DEFCONFIG"
-# Preserve configuration edits on subsequent builds.
+migrate_legacy_defconfig() {
+    # Earlier versions wrote optional features into the source defconfig.
+    # Undo only those recognized edits, retaining the independent Wi-Fi driver.
+    python3 - "$ROOT" "$OUT_DIR" "${nethunter_options[@]}" <<'PY'
+from pathlib import Path
+import datetime, json, os, re, shutil, sys
+root, output = map(Path, sys.argv[1:3])
+nh = set(sys.argv[3:])
+path = root / 'arch/arm64/configs/raphael_defconfig'
+text = path.read_text()
+lines = text.splitlines()
+def key(line):
+    m = re.match(r'(?:CONFIG_([A-Z0-9_]+)=|# CONFIG_([A-Z0-9_]+) is not set$)', line)
+    return (m[1] or m[2]) if m else None
+values = {key(line): line for line in lines if key(line)}
+stock = json.loads(r'''{"FHANDLE":"# CONFIG_FHANDLE is not set","IKCONFIG":"CONFIG_IKCONFIG=y","IKCONFIG_PROC":"CONFIG_IKCONFIG_PROC=y","NAMESPACES":"CONFIG_NAMESPACES=y","PID_NS":"# CONFIG_PID_NS is not set","MODULES":"CONFIG_MODULES=y","MODULE_UNLOAD":"CONFIG_MODULE_UNLOAD=y","NET":"CONFIG_NET=y","PACKET":"CONFIG_PACKET=y","UNIX":"CONFIG_UNIX=y","INET":"CONFIG_INET=y","NETFILTER":"CONFIG_NETFILTER=y","BRIDGE_NETFILTER":"# CONFIG_BRIDGE_NETFILTER is not set","NF_CONNTRACK":"CONFIG_NF_CONNTRACK=y","NETFILTER_XT_TARGET_NFLOG":"CONFIG_NETFILTER_XT_TARGET_NFLOG=y","NETFILTER_XT_TARGET_NFQUEUE":"CONFIG_NETFILTER_XT_TARGET_NFQUEUE=y","NETFILTER_XT_TARGET_TPROXY":"CONFIG_NETFILTER_XT_TARGET_TPROXY=y","NETFILTER_XT_MATCH_COMMENT":"CONFIG_NETFILTER_XT_MATCH_COMMENT=y","NETFILTER_XT_MATCH_CONNTRACK":"CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y","NETFILTER_XT_MATCH_STATE":"CONFIG_NETFILTER_XT_MATCH_STATE=y","NETFILTER_XT_MATCH_STRING":"CONFIG_NETFILTER_XT_MATCH_STRING=y","NF_CONNTRACK_IPV4":"CONFIG_NF_CONNTRACK_IPV4=y","IP_NF_IPTABLES":"CONFIG_IP_NF_IPTABLES=y","IP_NF_FILTER":"CONFIG_IP_NF_FILTER=y","IP_NF_NAT":"CONFIG_IP_NF_NAT=y","IP_NF_TARGET_MASQUERADE":"CONFIG_IP_NF_TARGET_MASQUERADE=y","IP_NF_TARGET_REDIRECT":"CONFIG_IP_NF_TARGET_REDIRECT=y","IP_NF_MANGLE":"CONFIG_IP_NF_MANGLE=y","IP_NF_RAW":"CONFIG_IP_NF_RAW=y","NF_CONNTRACK_IPV6":"CONFIG_NF_CONNTRACK_IPV6=y","IP6_NF_IPTABLES":"CONFIG_IP6_NF_IPTABLES=y","IP6_NF_FILTER":"CONFIG_IP6_NF_FILTER=y","IP6_NF_MANGLE":"CONFIG_IP6_NF_MANGLE=y","IP6_NF_RAW":"CONFIG_IP6_NF_RAW=y","BRIDGE":"CONFIG_BRIDGE=y","BT":"CONFIG_BT=y","CFG80211":"CONFIG_CFG80211=y","BLK_DEV_LOOP":"CONFIG_BLK_DEV_LOOP=y","NETDEVICES":"CONFIG_NETDEVICES=y","TUN":"CONFIG_TUN=y","VETH":"CONFIG_VETH=y","USB_RTL8152":"CONFIG_USB_RTL8152=y","USB_USBNET":"CONFIG_USB_USBNET=y","USB_XHCI_HCD":"CONFIG_USB_XHCI_HCD=y","USB_DWC3":"CONFIG_USB_DWC3=y","USB_GADGET":"CONFIG_USB_GADGET=y","USB_CONFIGFS":"CONFIG_USB_CONFIGFS=y","USB_CONFIGFS_NCM":"CONFIG_USB_CONFIGFS_NCM=y","USB_CONFIGFS_RNDIS":"CONFIG_USB_CONFIGFS_RNDIS=y","USB_CONFIGFS_MASS_STORAGE":"CONFIG_USB_CONFIGFS_MASS_STORAGE=y","USB_CONFIGFS_F_FS":"CONFIG_USB_CONFIGFS_F_FS=y","USB_CONFIGFS_F_HID":"CONFIG_USB_CONFIGFS_F_HID=y","TMPFS_POSIX_ACL":"CONFIG_TMPFS_POSIX_ACL=y","STATIC_USERMODEHELPER":"CONFIG_STATIC_USERMODEHELPER=y","STATIC_USERMODEHELPER_PATH":"CONFIG_STATIC_USERMODEHELPER_PATH=\"\""}''')
+owned = set()
+expected = {}
+if all(values.get(k) == f'CONFIG_{k}=y' for k in nh):
+    owned |= nh - {'CFG80211_WEXT', 'WLAN_VENDOR_REALTEK', 'RTL8822BU'}
+    expected.update({k: f'CONFIG_{k}=y' for k in owned})
+if values.get('KSU_MANUAL_HOOK') == 'CONFIG_KSU_MANUAL_HOOK=y':
+    enabled = {'KSU', 'KSU_MANUAL_HOOK', 'KPROBES', 'KRETPROBES', 'KPROBE_EVENTS'}
+    disabled = {'KSU_DEBUG', 'KSU_KPROBES_HOOK', 'KSU_SYSCALL_TABLE_HOOK', 'STATIC_USERMODEHELPER'}
+    owned |= enabled | disabled
+    expected.update({k: f'CONFIG_{k}=y' for k in enabled})
+    expected.update({k: f'# CONFIG_{k} is not set' for k in disabled})
+    # The earlier integration removed this stock path together with its enable.
+    if 'STATIC_USERMODEHELPER_PATH' not in values:
+        lines.append(stock['STATIC_USERMODEHELPER_PATH'])
+result = []
+for line in lines:
+    k = key(line)
+    if k in owned and line == expected[k]:
+        if k in stock:
+            result.append(stock[k])
+    else:
+        result.append(line)
+updated = '\n'.join(result) + '\n'
+if updated != text:
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S')
+    backup = output / f'raphael_defconfig.before-optional-{stamp}-{os.getpid()}'
+    shutil.copy2(path, backup)
+    path.write_text(updated)
+    print(f'Migrated legacy optional-feature defconfig; backup: {backup}')
+PY
+}
+
+prepare_feature_config() {
+    # Save pre-feature settings so switching flags in one OUT_DIR is reversible.
+    python3 - "$OUT_DIR" "$DEFCONFIG" "$WITH_KSU" "$WITH_NETHUNTER" \
+        "${nethunter_options[@]}" <<'PY'
+from pathlib import Path
+import datetime, json, os, re, shutil, sys
+output = Path(sys.argv[1])
+defconfig = sys.argv[2]
+requested = {'ksu': bool(int(sys.argv[3])), 'nethunter': bool(int(sys.argv[4]))}
+groups = {
+    'ksu': set(('KSU KSU_MANUAL_HOOK KSU_DEBUG KSU_KPROBES_HOOK '
+                'KSU_SYSCALL_TABLE_HOOK KPROBES KRETPROBES KPROBE_EVENTS '
+                'STATIC_USERMODEHELPER STATIC_USERMODEHELPER_PATH').split()),
+    'nethunter': set(sys.argv[5:]),
+}
+def key(line):
+    m = re.match(r'(?:CONFIG_([A-Z0-9_]+)=|# CONFIG_([A-Z0-9_]+) is not set$)', line)
+    return (m[1] or m[2]) if m else None
+def values(lines):
+    return {key(line): line for line in lines if key(line)}
+config = output / '.config'
+base = values((output / '.raphael-base.config').read_text().splitlines())
+lines = config.read_text().splitlines()
+current = values(lines)
+state_path = output / '.raphael-features.json'
+state = json.loads(state_path.read_text()) if state_path.exists() else None
+if state and state.get('defconfig') != defconfig:
+    sys.exit('Error: DEFCONFIG changed; select a new OUT_DIR to preserve your configuration.')
+previous = state['features'] if state else {
+    'ksu': current.get('KSU') in ('CONFIG_KSU=y', 'CONFIG_KSU=m'),
+    'nethunter': (output / 'nethunter-config.txt').exists() or all(
+        current.get(k) == f'CONFIG_{k}=y' for k in groups['nethunter']),
+}
+before = state['before'] if state else {k: current.get(k) for g in groups.values() for k in g}
+if not state:
+    # Existing always-enabled builds have no trustworthy pre-feature snapshot.
+    for name, options in groups.items():
+        if previous[name]:
+            before.update({k: base.get(k) for k in options})
+restore = {k for name, options in groups.items() if previous[name] for k in options}
+if restore:
+    lines = [line for line in lines if key(line) not in restore]
+    lines.extend(before[k] for k in sorted(restore) if before.get(k) is not None)
+restored = values(lines)
+before = {k: restored.get(k) for g in groups.values() for k in g}
+if not state or previous != requested:
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S')
+    backup = output / f'.config.before-features-{stamp}-{os.getpid()}'
+    shutil.copy2(config, backup)
+    print(f'Configuration before feature selection saved to: {backup}')
+config.write_text('\n'.join(lines) + '\n')
+state = {'defconfig': defconfig, 'features': requested, 'before': before}
+temporary = state_path.with_suffix('.tmp')
+temporary.write_text(json.dumps(state, indent=2) + '\n')
+temporary.replace(state_path)
+PY
+}
+
+migrate_legacy_defconfig
+# Resolve the unmodified optional-feature baseline without replacing .config.
+make "${args[@]}" KCONFIG_CONFIG="$OUT_DIR/.raphael-base.config" "$DEFCONFIG"
 if [[ ! -f $OUT_DIR/.config ]]; then
-    make "${args[@]}" "$DEFCONFIG"
+    cp -- "$OUT_DIR/.raphael-base.config" "$OUT_DIR/.config"
 fi
+prepare_feature_config
 # Enable the USB driver in existing build directories as well as new configs.
 "$ROOT/scripts/config" --file "$OUT_DIR/.config" \
     -e WLAN -e WLAN_VENDOR_REALTEK -e CFG80211 -e CFG80211_WEXT -e RTL8822BU
-"$ROOT/scripts/config" --file "$OUT_DIR/.config" \
-    -e KSU -e KSU_MANUAL_HOOK -e KPROBES -e KRETPROBES -e KPROBE_EVENTS \
-    -d KSU_KPROBES_HOOK -d KSU_SYSCALL_TABLE_HOOK -d KSU_DEBUG -d STATIC_USERMODEHELPER
-apply_nethunter_config "$OUT_DIR/.config"
+if (( WITH_KSU )); then
+    "$ROOT/scripts/config" --file "$OUT_DIR/.config" \
+        -e KSU -e KSU_MANUAL_HOOK -e KPROBES -e KRETPROBES -e KPROBE_EVENTS \
+        -d KSU_KPROBES_HOOK -d KSU_SYSCALL_TABLE_HOOK -d KSU_DEBUG -d STATIC_USERMODEHELPER
+else
+    "$ROOT/scripts/config" --file "$OUT_DIR/.config" -d KSU -d KSU_MANUAL_HOOK
+fi
+if (( WITH_NETHUNTER )); then
+    apply_nethunter_config "$OUT_DIR/.config"
+else
+    rm -f -- "$OUT_DIR/nethunter-config.txt"
+fi
 make "${args[@]}" olddefconfig
-verify_nethunter_config
+if (( WITH_NETHUNTER )); then
+    verify_nethunter_config
+fi
 grep -qx 'CONFIG_RTL8822BU=y' "$OUT_DIR/.config" ||
     die 'RTL8822BU could not be enabled; check USB and cfg80211 configuration.'
-for option in KSU KSU_MANUAL_HOOK KPROBES KRETPROBES KPROBE_EVENTS; do
-    grep -qx "CONFIG_${option}=y" "$OUT_DIR/.config" || die "$option could not be enabled."
-done
-# Required for the embedded KernelSU-Next pre-init runner.
-make "${args[@]}" headers_install
+if (( WITH_KSU )); then
+    for option in KSU KSU_MANUAL_HOOK KPROBES KRETPROBES KPROBE_EVENTS; do
+        grep -qx "CONFIG_${option}=y" "$OUT_DIR/.config" || die "$option could not be enabled."
+    done
+    # Required for the embedded KernelSU-Next pre-init runner.
+    make "${args[@]}" headers_install
+    printf 'KernelSU-Next: enabled (--ksu)\n'
+else
+    if grep -Eq '^CONFIG_KSU=(y|m)$' "$OUT_DIR/.config"; then
+        die 'KernelSU remained enabled without --ksu.'
+    fi
+    printf 'KernelSU-Next: disabled (use --ksu to enable)\n'
+fi
+if (( WITH_NETHUNTER )); then
+    printf 'NetHunter profile: enabled (--nethunter)\n'
+else
+    printf 'NetHunter profile: disabled (use --nethunter to enable)\n'
+fi
 
 
 if (( $# )); then
