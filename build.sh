@@ -43,8 +43,7 @@ Examples:
   ./build.sh Image.gz dtbs
   STOCK_BOOT_IMG=/path/to/working/boot.img ./build.sh
   STOCK_BOOT_IMG=/path/to/working/boot.img ./build.sh --bootimg-only
-  STOCK_DTBO_IMG=/path/to/working/dtbo.img DTBO_INDEX=0 ./build.sh --dtbo-only
-  STOCK_DTBO_IMG=/path/to/original/dtbo.img ./build.sh --dtbo-only --rom-dtbo-patch
+  STOCK_DTBO_IMG=/path/to/original/dtbo.img ./build.sh --dtbo-only
 
 Missing toolchains are downloaded from the Boolx-22 GitHub release.
 The pinned 88x2bu driver is downloaded and enabled for Archer T3U Plus (2357:0138).
@@ -74,7 +73,7 @@ preserved. magiskboot is downloaded automatically; MAGISKBOOT can override it.
 ROM-specific image signing is separate.
 DTBO packaging preserves the template's other entries and metadata. Select the
 Raphael entry indices appropriate for your ROM; images are never flashed here.
---rom-dtbo-patch only accepts the verified LineageOS 17 DTBO from this setup.
+The verified LineageOS 17 DTBO is recognized automatically; no index is needed.
 It produces a fixed experimental image for entry 11, not the current build's
 overlay. Keep the original; phone behavior and parent AVB acceptance are untested.
 EOF
@@ -200,24 +199,28 @@ if [[ $MODE == dtbo-only && -z ${STOCK_DTBO_IMG:-} ]]; then
 fi
 if [[ -n ${STOCK_DTBO_IMG:-} ]]; then
     [[ -s $STOCK_DTBO_IMG ]] || die "Working DTBO image not found: $STOCK_DTBO_IMG"
-    [[ ${DTBO_INDEX:-} =~ ^[0-9]+(,[0-9]+)*$ ]] ||
-        die 'Set DTBO_INDEX to the Raphael entry index, or comma-separated indices, in STOCK_DTBO_IMG.'
     STOCK_DTBO_IMG=$(realpath -- "$STOCK_DTBO_IMG")
-    if (( WITH_ROM_DTBO_PATCH )); then
-        python3 - "$STOCK_DTBO_IMG" <<'PY'
+    if [[ $MODE == build || $MODE == dtbo-only ]] &&
+       { (( WITH_ROM_DTBO_PATCH )) || [[ -z ${DTBO_INDEX:-} || $DTBO_INDEX == 11 ]]; }; then
+        rom_dtbo_hash=$(python3 - "$STOCK_DTBO_IMG" <<'PY'
 import hashlib, sys
+hasher = hashlib.sha256()
 with open(sys.argv[1], 'rb') as source:
-    digest = hashlib.file_digest(source, 'sha256').hexdigest() if hasattr(hashlib, 'file_digest') else None
-    if digest is None:
-        source.seek(0)
-        hasher = hashlib.sha256()
-        for chunk in iter(lambda: source.read(1048576), b''):
-            hasher.update(chunk)
-        digest = hasher.hexdigest()
-if digest != '2a7fedf9e370b421227879ae1ca035b30028bbdbf7f7265b553770d3c60a9674':
-    sys.exit('Error: --rom-dtbo-patch only supports the exact verified original DTBO image.')
+    for chunk in iter(lambda: source.read(1048576), b''):
+        hasher.update(chunk)
+print(hasher.hexdigest())
 PY
+      )
+        if [[ $rom_dtbo_hash == 2a7fedf9e370b421227879ae1ca035b30028bbdbf7f7265b553770d3c60a9674 ]]; then
+            WITH_ROM_DTBO_PATCH=1
+            DTBO_INDEX=11
+            printf 'Recognized the verified LineageOS 17 DTBO; using entry 11 automatically.\n'
+        elif (( WITH_ROM_DTBO_PATCH )); then
+            die '--rom-dtbo-patch only supports the exact verified original DTBO image.'
+        fi
     fi
+    [[ ${DTBO_INDEX:-} =~ ^[0-9]+(,[0-9]+)*$ ]] ||
+        die 'This DTBO image is not recognized automatically; provide its verified Raphael entry as DTBO_INDEX.'
     python3 - "$STOCK_DTBO_IMG" "$DTBO_INDEX" <<'PY'
 import struct, sys
 with open(sys.argv[1], 'rb') as f:
