@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # VoltageOS kernel_xiaomi_raphael, branch 17.
-# Automatically downloads Google Clang 22.0.2.
+# Downloads Google Clang 22.0.2 and builds with 4 parallel jobs.
 set -Eeuo pipefail
 
 die() {
@@ -16,11 +16,11 @@ Environment:
   TOOLCHAIN  Toolchain directory (default: ./clang-22)
   OUT_DIR    Output directory (default: ./out)
   DEFCONFIG  Configuration (default: raphael_defconfig)
-  JOBS       Parallel jobs (default: available CPUs)
+  JOBS       Parallel jobs (default: 4)
 
 Examples:
   ./build.sh
-  JOBS=4 ./build.sh
+  JOBS=8 ./build.sh
   TOOLCHAIN=/opt/clang-22 ./build.sh
   ./build.sh menuconfig
 
@@ -54,7 +54,7 @@ download_google_clang() {
     done
 
     # Google clang-r596125 is Clang 22.0.2.
-    # Pin the source commit so future updates cannot change this download.
+    # Pin the source commit for a consistent toolchain.
     local revision=clang-r596125
     local commit=4a7d0a5e443c27d8f68fbd46abfab464e1355a69
     local base=https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86
@@ -115,7 +115,7 @@ for tool in clang clang++ ld.lld llvm-ar llvm-nm llvm-objcopy \
         die "$tool must be version 22: ${version%%$'\n'*}"
 done
 
-for tool in make gcc g++ bc bison flex python3 perl pkg-config gzip nproc; do
+for tool in make gcc g++ bc bison flex python3 perl pkg-config gzip; do
     command -v "$tool" >/dev/null 2>&1 ||
         die "Missing host dependency: $tool (see ./build.sh --help)."
 done
@@ -133,12 +133,13 @@ DEFCONFIG=${DEFCONFIG:-raphael_defconfig}
 [[ -f arch/arm64/configs/$DEFCONFIG ]] ||
     die "Unknown configuration: $DEFCONFIG"
 
-JOBS=${JOBS:-$(nproc)}
+# Default to four parallel build jobs.
+JOBS=${JOBS:-4}
 [[ $JOBS =~ ^[1-9][0-9]*$ ]] ||
     die 'JOBS must be a positive integer.'
 
 # This 4.14 tree supports LLVM=1.
-# PATH also selects LLVM tools invoked internally by the LTO build.
+# PATH selects LLVM utilities invoked internally for LTO.
 args=(
     O="$OUT_DIR"
     ARCH=arm64
@@ -161,7 +162,7 @@ compiler_version=$("$TOOLCHAIN/clang" --version)
 printf 'Compiler: %s\nConfig: %s\nOutput: %s\nJobs: %s\n' \
     "${compiler_version%%$'\n'*}" "$DEFCONFIG" "$OUT_DIR" "$JOBS"
 
-# Preserve menuconfig changes on subsequent builds.
+# Preserve configuration changes on subsequent builds.
 # Use a new OUT_DIR when changing DEFCONFIG.
 if [[ ! -f $OUT_DIR/.config ]]; then
     make "${args[@]}" "$DEFCONFIG"
