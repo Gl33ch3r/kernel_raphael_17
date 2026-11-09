@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # All-in-one Raphael branch 17 build: Boolx Clang 22, NetHunter, 88x2bu,
 # KernelSU-Next legacy, EA8076 60/75/90 Hz, external DTC and boot/DTBO packaging.
-# drivers/kernelsu/Kbuild:135: "KSU_GIT_VERSION not defined! It is better to make KernelSU-Next a git repository!"
 set -Eeuo pipefail
 
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
@@ -974,6 +973,14 @@ replacements = json.loads(r'''{
         ]
     ],
     "KernelSU-Next/kernel/Kbuild": [
+        [
+            "# If there is no .git directory, use default version\n$(warning \"KSU_GIT_VERSION not defined! It is better to make KernelSU-Next a git repository!\")\nKSU_VERSION_FALLBACK := 1\n$(info -- KernelSU-Next version fallback: $(KSU_VERSION_FALLBACK))\nKSU_VERSION := $(KSU_VERSION_FALLBACK)\n",
+            "# An archive can supply an explicit version without Git metadata.\nifndef KSU_VERSION_OVERRIDE\n$(warning \"KSU_GIT_VERSION not defined! It is better to make KernelSU-Next a git repository!\")\nKSU_VERSION_FALLBACK := 1\n$(info -- KernelSU-Next version fallback: $(KSU_VERSION_FALLBACK))\nKSU_VERSION := $(KSU_VERSION_FALLBACK)\nendif\n"
+        ],
+        [
+            "$(warning \"KSU_VERSION_TAG not defined! It is better to make KernelSU-Next a git submodule!\")\nKSU_VERSION_TAG_FALLBACK := v0.0.1\nKSU_VERSION_TAG=$(KSU_VERSION_TAG_FALLBACK)\n",
+            "ifndef KSU_VERSION_TAG_OVERRIDE\n$(warning \"KSU_VERSION_TAG not defined! It is better to make KernelSU-Next a git submodule!\")\nKSU_VERSION_TAG_FALLBACK := v0.0.1\nKSU_VERSION_TAG=$(KSU_VERSION_TAG_FALLBACK)\nendif\n"
+        ],
         [
             "ccflags-y += -DKSU_COMPAT_HAS_BACKPORTED_CPUS_PTR\nendif\n\n# Handle optional backports\nifeq ($(shell grep -q \"strncpy_from_user_nofault\" $(srctree)/include/linux/uaccess.h; echo $$?),0)\nccflags-y += -DKSU_OPTIONAL_STRNCPY\n",
             "ccflags-y += -DKSU_COMPAT_HAS_BACKPORTED_CPUS_PTR\nendif\n\n# Detect Android/vendor kernels that backported __poll_t before 4.16.\nifeq ($(shell grep -Eq \"typedef.*__poll_t\" $(srctree)/include/uapi/linux/types.h $(srctree)/include/linux/types.h; echo $$?),0)\nccflags-y += -DKSU_HAS_POLL_T\nendif\n\n# Handle optional backports\nifeq ($(shell grep -q \"strncpy_from_user_nofault\" $(srctree)/include/linux/uaccess.h; echo $$?),0)\nccflags-y += -DKSU_OPTIONAL_STRNCPY\n"
