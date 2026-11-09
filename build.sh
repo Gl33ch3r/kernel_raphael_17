@@ -1293,7 +1293,7 @@ else
     rm -f -- "$OUT_DIR/nethunter-config.txt"
 fi
 if (( WITH_KSU && WITH_NETHUNTER )); then
-    localversion='-G0N-Nethunter-KSU-🇵🇭'
+    localversion='-G0N-NETHUNTER-KSU-🇵🇭'
 elif (( WITH_KSU )); then
     localversion='-G0N-KSU-🇵🇭'
 else
