@@ -1292,7 +1292,17 @@ if (( WITH_NETHUNTER )); then
 else
     rm -f -- "$OUT_DIR/nethunter-config.txt"
 fi
+if (( WITH_KSU && WITH_NETHUNTER )); then
+    localversion='-G0N-Nethunter-KSU-🇵🇭'
+elif (( WITH_KSU )); then
+    localversion='-G0N-KSU-🇵🇭'
+else
+    localversion='-G0N-🇵🇭'
+fi
+"$ROOT/scripts/config" --file "$OUT_DIR/.config" --set-str LOCALVERSION "$localversion"
 make "${args[@]}" olddefconfig
+grep -Fxq "CONFIG_LOCALVERSION=\"$localversion\"" "$OUT_DIR/.config" ||
+    die 'CONFIG_LOCALVERSION could not be set.'
 if (( WITH_NETHUNTER )); then
     verify_nethunter_config
 fi
