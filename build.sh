@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # All-in-one Raphael branch 17 build: Boolx Clang 22, NetHunter, 88x2bu,
 # KernelSU-Next legacy, EA8076 60/75/90 Hz, external DTC and boot/DTBO packaging.
+# drivers/kernelsu/Kbuild:135: "KSU_GIT_VERSION not defined! It is better to make KernelSU-Next a git repository!"
 set -Eeuo pipefail
 
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
