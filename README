@@ -1,18 +1,32 @@
-Linux kernel
-============
+Usage: ./build.sh [--ksu] [--nethunter] [make targets/options ...]
 
-This file was moved to Documentation/admin-guide/README.rst
+Defaults: raphael_defconfig, out/, all + Image.gz, Clang 22, built-in 88x2bu.
+KernelSU-Next and NetHunter are disabled unless their flags are supplied.
+Options:
+  --ksu          Download/integrate KernelSU-Next legacy with manual hooks
+  --nethunter    Enable the NetHunter kernel configuration profile
+  --bootimg-only Package an existing compiled kernel using STOCK_BOOT_IMG
+  --wifi-diagnose Collect adapter diagnostics through adb
+  --help, -h     Show this help
+Feature flags can be combined and may appear before or after make targets.
+They cannot be used with --bootimg-only or --wifi-diagnose.
+Environment:
+  TOOLCHAIN  LLVM 22 installation directory (default: ./toolchain/clang22)
+  OUT_DIR    Build directory (default: out, relative to the source tree)
+  DEFCONFIG  Configuration in arch/arm64/configs (default: raphael_defconfig)
+  JOBS       Parallel jobs (default: 4)
+  LLVM_IAS   Use LLVM assembler: 1 (default); 0 requires GNU cross-binutils
+  DTC_EXT    External dtc executable (default: dtc from PATH)
+  STOCK_BOOT_IMG  Working boot.img from the same ROM; enables boot.img packaging
 
-Please notice that there are several guides for kernel developers and users.
-These guides can be rendered in a number of formats, like HTML and PDF.
-
-In order to build the documentation, use ``make htmldocs`` or
-``make pdfdocs``.
-
-There are various text files in the Documentation/ subdirectory,
-several of them using the Restructured Text markup notation.
-See Documentation/00-INDEX for a list of what is contained in each file.
-
-Please read the Documentation/process/changes.rst file, as it contains the
-requirements for building and running the kernel, and information about
-the problems which may result by upgrading your kernel.
+Examples:
+  ./build.sh
+  ./build.sh --ksu
+  ./build.sh --nethunter
+  ./build.sh --ksu --nethunter
+  TOOLCHAIN=/opt/clang-22 JOBS=8 ./build.sh
+  ./build.sh menuconfig
+  ./build.sh --wifi-diagnose
+  ./build.sh Image.gz dtbs
+  STOCK_BOOT_IMG=/path/to/working/boot.img ./build.sh
+  STOCK_BOOT_IMG=/path/to/working/boot.img ./build.sh --bootimg-only
