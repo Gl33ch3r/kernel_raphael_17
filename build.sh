@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # All-in-one Raphael branch 17 build: Boolx Clang 22, NetHunter, 88x2bu,
 # KernelSU-Next legacy manual hooks, external DTC and boot.img repacking.
+# "KSU_GIT_VERSION not defined! It is better to make KernelSU-Next a git repository!"
 set -Eeuo pipefail
 
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
