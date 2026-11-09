@@ -16,6 +16,7 @@ Options:
   --nethunter    Enable the NetHunter kernel configuration profile
   --bootimg-only Package an existing compiled kernel using STOCK_BOOT_IMG
   --dtbo-only    Package an existing Raphael overlay using STOCK_DTBO_IMG
+  --rom-dtbo-patch Apply the verified, ROM-specific 75/90 Hz DTBO patch
   --wifi-diagnose Collect adapter diagnostics through adb
   --help, -h     Show this help
 Feature flags can be combined and may appear before or after make targets.
@@ -43,6 +44,7 @@ Examples:
   STOCK_BOOT_IMG=/path/to/working/boot.img ./build.sh
   STOCK_BOOT_IMG=/path/to/working/boot.img ./build.sh --bootimg-only
   STOCK_DTBO_IMG=/path/to/working/dtbo.img DTBO_INDEX=0 ./build.sh --dtbo-only
+  STOCK_DTBO_IMG=/path/to/original/dtbo.img ./build.sh --dtbo-only --rom-dtbo-patch
 
 Missing toolchains are downloaded from the Boolx-22 GitHub release.
 The pinned 88x2bu driver is downloaded and enabled for Archer T3U Plus (2357:0138).
@@ -72,17 +74,22 @@ preserved. magiskboot is downloaded automatically; MAGISKBOOT can override it.
 ROM-specific image signing is separate.
 DTBO packaging preserves the template's other entries and metadata. Select the
 Raphael entry indices appropriate for your ROM; images are never flashed here.
+--rom-dtbo-patch only accepts the verified LineageOS 17 DTBO from this setup.
+It produces a fixed experimental image for entry 11, not the current build's
+overlay. Keep the original; phone behavior and parent AVB acceptance are untested.
 EOF
 }
 
 WITH_KSU=0
 WITH_NETHUNTER=0
+WITH_ROM_DTBO_PATCH=0
 MODE=build
 make_options=()
 while (( $# )); do
     case "$1" in
         --ksu) WITH_KSU=1 ;;
         --nethunter) WITH_NETHUNTER=1 ;;
+        --rom-dtbo-patch) WITH_ROM_DTBO_PATCH=1 ;;
         --help|-h) show_help; exit 0 ;;
         --bootimg-only|--dtbo-only|--wifi-diagnose)
             [[ $MODE == build || $MODE == "${1#--}" ]] || die 'Choose only one build mode.'
@@ -98,6 +105,15 @@ if [[ $MODE != build ]]; then
     (( WITH_KSU == 0 && WITH_NETHUNTER == 0 )) ||
         die '--ksu and --nethunter require a build; they cannot change an already compiled kernel or run diagnostics.'
     (( $# == 0 )) || die "--$MODE does not accept make targets/options."
+fi
+if (( WITH_ROM_DTBO_PATCH )); then
+    [[ $MODE == build || $MODE == dtbo-only ]] ||
+        die '--rom-dtbo-patch can only be used with a build or --dtbo-only.'
+    [[ -n ${STOCK_DTBO_IMG:-} ]] ||
+        die 'Set STOCK_DTBO_IMG to the original, verified LineageOS 17 DTBO image.'
+    [[ -z ${DTBO_INDEX:-} || $DTBO_INDEX == 11 ]] ||
+        die '--rom-dtbo-patch supports only the verified DTBO entry 11.'
+    DTBO_INDEX=11
 fi
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
@@ -187,6 +203,21 @@ if [[ -n ${STOCK_DTBO_IMG:-} ]]; then
     [[ ${DTBO_INDEX:-} =~ ^[0-9]+(,[0-9]+)*$ ]] ||
         die 'Set DTBO_INDEX to the Raphael entry index, or comma-separated indices, in STOCK_DTBO_IMG.'
     STOCK_DTBO_IMG=$(realpath -- "$STOCK_DTBO_IMG")
+    if (( WITH_ROM_DTBO_PATCH )); then
+        python3 - "$STOCK_DTBO_IMG" <<'PY'
+import hashlib, sys
+with open(sys.argv[1], 'rb') as source:
+    digest = hashlib.file_digest(source, 'sha256').hexdigest() if hasattr(hashlib, 'file_digest') else None
+    if digest is None:
+        source.seek(0)
+        hasher = hashlib.sha256()
+        for chunk in iter(lambda: source.read(1048576), b''):
+            hasher.update(chunk)
+        digest = hasher.hexdigest()
+if digest != '2a7fedf9e370b421227879ae1ca035b30028bbdbf7f7265b553770d3c60a9674':
+    sys.exit('Error: --rom-dtbo-patch only supports the exact verified original DTBO image.')
+PY
+    fi
     python3 - "$STOCK_DTBO_IMG" "$DTBO_INDEX" <<'PY'
 import struct, sys
 with open(sys.argv[1], 'rb') as f:
@@ -201,10 +232,108 @@ if any(int(index) >= count for index in sys.argv[2].split(',')):
 PY
 fi
 
+pack_verified_rom_dtbo() {
+    command -v zstd >/dev/null 2>&1 || die '--rom-dtbo-patch requires zstd.'
+    python3 - "$STOCK_DTBO_IMG" "$OUT_DIR/dtbo.img" <<'PYROMDTBO'
+import base64, hashlib, lzma, os, pathlib, subprocess, sys, tempfile
+
+original, output = map(pathlib.Path, sys.argv[1:])
+input_hash = '2a7fedf9e370b421227879ae1ca035b30028bbdbf7f7265b553770d3c60a9674'
+output_hash = '9f4b9690d3e7c9f484aab4e23c9bc4df8a7a8ae47f57e2c876c7277f35ce5349'
+def sha256(path):
+    h = hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1048576), b''):
+            h.update(chunk)
+    return h.hexdigest()
+if original.resolve() == output.resolve() or (output.exists() and os.path.samefile(original, output)):
+    sys.exit('Error: DTBO output must differ from the original image.')
+if sha256(original) != input_hash:
+    sys.exit('Error: original DTBO changed or does not match the verified ROM image.')
+
+# Fixed binary delta for the verified LineageOS 17 Raphael DTBO, entry 11.
+encoded = b"""
+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
+tEaSAAHCF/EjAACLqWRJscRn+wIAAAAABFla
+"""
+with tempfile.TemporaryDirectory(prefix='.rom-dtbo-', dir=output.parent) as work:
+    patch = pathlib.Path(work) / 'patch.zst'
+    result = pathlib.Path(work) / 'dtbo.img'
+    try:
+        patch.write_bytes(lzma.decompress(base64.b64decode(encoded, validate=False)))
+        subprocess.run(['zstd', '-q', '-d', '--patch-from=' + str(original),
+                        str(patch), '-o', str(result)], check=True)
+    except (lzma.LZMAError, ValueError, subprocess.CalledProcessError) as exc:
+        sys.exit(f'Error: cannot reconstruct the verified ROM DTBO: {exc}')
+    if sha256(result) != output_hash:
+        sys.exit('Error: reconstructed ROM DTBO failed its SHA-256 check.')
+    os.replace(result, output)
+print(f'Verified ROM-specific DTBO image created: {output}')
+print('This fixed patch does not use the current build overlay; keep the original for recovery.')
+print('Panel behavior and installed parent AVB acceptance require device testing.')
+PYROMDTBO
+}
+
 pack_dtbo_image() (
     command -v python3 >/dev/null 2>&1 || die 'python3 is required.'
     [[ -n ${STOCK_DTBO_IMG:-} ]] || die 'Set STOCK_DTBO_IMG to a matching unsigned Android DTBO image.'
     [[ -n ${DTBO_INDEX:-} ]] || die 'Set DTBO_INDEX to the matching Raphael entry index (or comma-separated indices).'
+    if (( WITH_ROM_DTBO_PATCH )); then
+        pack_verified_rom_dtbo
+        return
+    fi
     python3 - "$STOCK_DTBO_IMG" "$DTBO_INDEX" \
         "$OUT_DIR/arch/arm64/boot/dts/qcom/raphael-sm8150-overlay.dtbo" \
         "$OUT_DIR/dtbo.img" <<'PYDTBO'
@@ -1293,7 +1422,7 @@ else
     rm -f -- "$OUT_DIR/nethunter-config.txt"
 fi
 if (( WITH_KSU && WITH_NETHUNTER )); then
-    localversion='-G0N-NETHUNTER-KSU-🇵🇭'
+    localversion='-G0N-Nethunter-KSU-🇵🇭'
 elif (( WITH_KSU )); then
     localversion='-G0N-KSU-🇵🇭'
 else
