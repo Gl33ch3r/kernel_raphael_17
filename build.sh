@@ -811,7 +811,7 @@ for name, expected in native.items():
         if mode_ids != ['0'] or original.count(suffix) != 1:
             fail(f'{name}: unexpected existing display modes or layout')
         updated = original.replace(suffix, addition + suffix, 1)
-    preference = 'qcom,mdss-dsi-preferred-refresh-rate = <75>;'
+    preference = 'qcom,mdss-dsi-preferred-refresh-rate = <60>;'
     panel_type = '\t\tqcom,mdss-dsi-panel-type = "dsi_cmd_mode";'
     if preference not in updated:
         if 'qcom,mdss-dsi-preferred-refresh-rate' in updated or updated.count(panel_type) != 1:
