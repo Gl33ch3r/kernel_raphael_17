@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# VoltageOS kernel_xiaomi_raphael, branch 17.
-# Downloads Google Clang 22.0.2 and builds with 4 parallel jobs.
+# VoltageOS kernel_xiaomi_raphael branch 17, Boolx Clang 22.
 set -Eeuo pipefail
 
 die() {
@@ -13,23 +12,18 @@ if [[ ${1:-} == --help ]]; then
 Usage: ./build.sh [make targets/options ...]
 
 Environment:
-  TOOLCHAIN  Toolchain directory (default: ./clang-22)
+  TOOLCHAIN  Toolchain directory (default: ./toolchain/clang22)
   OUT_DIR    Output directory (default: ./out)
   DEFCONFIG  Configuration (default: raphael_defconfig)
   JOBS       Parallel jobs (default: 4)
 
-Examples:
-  ./build.sh
-  JOBS=8 ./build.sh
-  TOOLCHAIN=/opt/clang-22 ./build.sh
-  ./build.sh menuconfig
-
-Debian/Ubuntu host dependencies:
+Debian/Ubuntu dependencies:
   sudo apt-get install build-essential bc bison flex libssl-dev \
-    libelf-dev zlib1g-dev python3 perl pkg-config cpio gzip lz4 curl tar
+    libelf-dev zlib1g-dev python3 perl pkg-config cpio gzip lz4 \
+    curl tar zstd
 
-A missing toolchain is downloaded from Google's official Android prebuilts.
-Requires Linux x86_64. Outputs are placed in out/.
+The missing toolchain is downloaded automatically.
+Requires Linux x86_64.
 EOF
     exit 0
 fi
@@ -40,60 +34,58 @@ cd "$ROOT"
 [[ -f Makefile && -d arch/arm64 ]] ||
     die 'Place build.sh in the kernel repository root.'
 
-TOOLCHAIN=${TOOLCHAIN:-"$ROOT/clang-22"}
+TOOLCHAIN=${TOOLCHAIN:-"$ROOT/toolchain/clang22"}
 [[ $TOOLCHAIN = /* ]] || TOOLCHAIN="$ROOT/$TOOLCHAIN"
 TOOLCHAIN=${TOOLCHAIN%/}
 
-download_google_clang() {
+download_toolchain() (
     [[ $(uname -s) == Linux && $(uname -m) == x86_64 ]] ||
-        die 'Google Clang requires a Linux x86_64 host.'
+        die 'Boolx Clang requires a Linux x86_64 host.'
 
-    for tool in curl tar mktemp; do
+    for tool in curl tar zstd sha256sum mktemp; do
         command -v "$tool" >/dev/null 2>&1 ||
             die "Missing download dependency: $tool"
     done
 
-    # Google clang-r596125 is Clang 22.0.2.
-    # Pin the source commit for a consistent toolchain.
-    local revision=clang-r596125
-    local commit=4a7d0a5e443c27d8f68fbd46abfab464e1355a69
-    local base=https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86
-    local url="$base/+archive/$commit/$revision.tar.gz"
+    local url=https://github.com/onettboots/boolx-clang-build/releases/download/Boolx-22/boolx-clang22.tar.zst
+    local checksum=5a5778d43b6f1f1531e8939213746b2b0b10d1445c3e0db84f5c24f29ce0a131
+    local destination=$TOOLCHAIN
     local staging
 
-    [[ ! -e $TOOLCHAIN ]] ||
-        die "Incomplete toolchain at $TOOLCHAIN; move it aside and retry."
+    [[ ! -e $destination ]] ||
+        die "Incomplete toolchain at $destination; move it aside and retry."
 
-    mkdir -p -- "$(dirname -- "$TOOLCHAIN")"
-    staging=$(mktemp -d "${TOOLCHAIN}.download.XXXXXX")
+    mkdir -p -- "$(dirname -- "$destination")"
+    staging=$(mktemp -d "${destination}.download.XXXXXX")
+    trap 'rm -rf -- "$staging"' EXIT
 
-    printf 'Downloading Google %s (Clang 22.0.2)...\n' "$revision"
+    printf 'Downloading Boolx Clang 22 to %s...\n' "$destination"
 
     if ! curl --fail --location --retry 3 --connect-timeout 30 \
-        "$url" -o "$staging/toolchain.tar.gz"; then
-        rm -rf -- "$staging"
-        die 'Toolchain download failed.'
+        "$url" -o "$staging/toolchain.tar.zst"; then
+        die 'Boolx Clang download failed.'
     fi
+
+    printf '%s  %s\n' "$checksum" "$staging/toolchain.tar.zst" |
+        sha256sum --check --status ||
+        die 'Toolchain checksum verification failed.'
 
     mkdir -- "$staging/unpacked"
 
-    if ! tar -xzf "$staging/toolchain.tar.gz" \
-        -C "$staging/unpacked"; then
-        rm -rf -- "$staging"
-        die 'Toolchain extraction failed.'
+    # Remove the archive's top-level boolx-clang/ directory.
+    if ! tar --zstd -xf "$staging/toolchain.tar.zst" \
+        --strip-components=1 -C "$staging/unpacked"; then
+        die 'Could not extract Boolx Clang.'
     fi
 
-    if [[ ! -x $staging/unpacked/bin/clang ]]; then
-        rm -rf -- "$staging"
-        die 'Downloaded archive is missing bin/clang.'
-    fi
+    [[ -x $staging/unpacked/bin/clang ]] ||
+        die 'Archive does not contain bin/clang.'
 
-    mv -- "$staging/unpacked" "$TOOLCHAIN"
-    rm -rf -- "$staging"
-}
+    mv -- "$staging/unpacked" "$destination"
+)
 
 if [[ ! -x $TOOLCHAIN/bin/clang && ! -x $TOOLCHAIN/clang ]]; then
-    download_google_clang
+    download_toolchain
 fi
 
 # Accept either an installation directory or its bin directory.
@@ -133,13 +125,10 @@ DEFCONFIG=${DEFCONFIG:-raphael_defconfig}
 [[ -f arch/arm64/configs/$DEFCONFIG ]] ||
     die "Unknown configuration: $DEFCONFIG"
 
-# Default to four parallel build jobs.
 JOBS=${JOBS:-4}
 [[ $JOBS =~ ^[1-9][0-9]*$ ]] ||
     die 'JOBS must be a positive integer.'
 
-# This 4.14 tree supports LLVM=1.
-# PATH selects LLVM utilities invoked internally for LTO.
 args=(
     O="$OUT_DIR"
     ARCH=arm64
@@ -162,8 +151,8 @@ compiler_version=$("$TOOLCHAIN/clang" --version)
 printf 'Compiler: %s\nConfig: %s\nOutput: %s\nJobs: %s\n' \
     "${compiler_version%%$'\n'*}" "$DEFCONFIG" "$OUT_DIR" "$JOBS"
 
-# Preserve configuration changes on subsequent builds.
-# Use a new OUT_DIR when changing DEFCONFIG.
+# Preserve configuration edits on subsequent builds.
+# Use a new OUT_DIR when changing DEFCONFIG or toolchains.
 if [[ ! -f $OUT_DIR/.config ]]; then
     make "${args[@]}" "$DEFCONFIG"
 fi
