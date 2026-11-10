@@ -929,6 +929,14 @@ for rule in encoder_rules:
 if legacy_preference is None:
     fail('missing continuous-splash preference edit')
 
+# mode_fixup returns bool; a negative errno must not be converted to true.
+driver_edits['drivers/gpu/drm/msm/dsi-staging/dsi_drm.c'].append((
+    '\trc = dsi_display_find_mode(display, &dsi_mode, &panel_dsi_mode);\n'
+    '\tif (rc)\n\t\treturn rc;\n',
+    '\trc = dsi_display_find_mode(display, &dsi_mode, &panel_dsi_mode);\n'
+    '\tif (rc)\n\t\treturn false;\n',
+))
+
 for name, replacements in driver_edits.items():
     path = root / name
     is_binding_doc = name == 'Documentation/devicetree/bindings/drm/msm/mdss-dsi-panel.txt'
