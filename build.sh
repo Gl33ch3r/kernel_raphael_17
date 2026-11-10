@@ -14,7 +14,7 @@ KernelSU-Next and NetHunter are disabled unless their flags are supplied.
 Options:
   --ksu          Download/integrate KernelSU-Next legacy with manual hooks
   --nethunter    Enable the NetHunter kernel configuration profile
-  --high-refresh Enable MIUICX R6.1 69/75/81/90 Hz SS panel modes
+  --high-refresh Enable MIUICX R6.1 69/75 Hz SS panel modes
   --bootimg-only Package an existing compiled kernel using STOCK_BOOT_IMG
   --dtbo-only    Create a DTBO image using STOCK_DTBO_IMG
   --wifi-diagnose Collect adapter diagnostics through adb
@@ -57,7 +57,7 @@ Repeat the desired flags on every build; changing flags restores pre-feature
 settings and preserves unrelated configuration edits. Old configurations are
 backed up when migrating from the previous always-enabled script.
 Display mode defaults to stock 60 Hz. --high-refresh enables experimental
-MIUICX R6.1 69/75/81/90 Hz for two SS EA8076 panels; 60 Hz remains preferred.
+MIUICX R6.1 69/75 Hz for two SS EA8076 panels; 60 Hz remains preferred.
 The panel overclock requires physical testing on this ROM and screen.
 Requires a Linux x86_64 host.
 Debian/Ubuntu host dependencies:
@@ -311,7 +311,7 @@ with tempfile.TemporaryDirectory(prefix='.evo-dtbo-', dir=output.parent) as work
         sys.exit('Error: reconstructed DTBO failed its SHA-256 check.')
     os.replace(result, output)
 print(f'Experimental MIUICX R6.1 DTBO created: {output}')
-print('This is a fixed ROM-specific 60/69/75/81/90 Hz image, not the current compiled overlay.')
+print('This is a fixed ROM-specific 60/69/75 Hz image, not the current compiled overlay.')
 print('Keep the original; parent AVB acceptance and panel behavior require device testing.')
 PYEVDTBO
 )
@@ -478,12 +478,14 @@ evo_panels = {
     'dsi-panel-ss-fhd-ea8076-cmd.dtsi': ('dsi_ss_fhd_ea8076_cmd', '545901f796377160d8a650db47d0afdbd1615d25ccc932345888c148575025e3'),
     'dsi-panel-ss-fhd-ea8076-global-cmd.dtsi': ('dsi_ss_fhd_ea8076_global_cmd', '64cf89985b4cc7eed0799c1ee691290006c0acfb54fcaa5f89dc27e696eb85b3'),
 }
-miuicx_marker = '/* MIUICX R6.1 SS panel modes: 69/75/81/90 Hz. */'
+miuicx_marker = '/* MIUICX R6.1 SS panel modes: 69/75 Hz. */'
+miuicx_previous_marker = '/* MIUICX R6.1 SS panel modes: 69/75/81/90 Hz. */'
 miuicx_rates = {1: (69, 1150000000), 2: (75, 1250000000),
                 3: (81, 1350000000), 4: (90, 1500000000)}
+miuicx_enabled = (1, 2)
 # DRM mode equality ignores the explicit vrefresh field. The MIUICX modes
-# share porch totals, so distinct transfer budgets give them distinct pixel
-# clocks and prevent Android from collapsing 75/81/90 Hz into 69 Hz.
+# share porch totals, so distinct transfer budgets give enabled modes distinct
+# pixel clocks and prevent Android from collapsing 75 Hz into 69 Hz.
 miuicx_transfers = {1: 13334, 2: 12196, 3: 11364, 4: 10205}
 miuicx_switch = {
     'dsi-panel-ss-fhd-ea8076-cmd.dtsi':
@@ -630,21 +632,24 @@ for name, label in panels.items():
     path = root / base / name
     original = path.read_text()
     updated = original
-    miuicx_installed = miuicx_marker in original
+    miuicx_installed = miuicx_marker in original or miuicx_previous_marker in original
     if miuicx_installed:
-        if name not in evo_panels or original.count(miuicx_marker) != 1:
+        installed_marker = (miuicx_previous_marker if miuicx_previous_marker in original
+                            else miuicx_marker)
+        installed_indices = (1, 2, 3, 4) if installed_marker == miuicx_previous_marker else miuicx_enabled
+        if name not in evo_panels or original.count(installed_marker) != 1 or (miuicx_marker in original and miuicx_previous_marker in original):
             fail(f'{name}: unexpected MIUICX mode marker')
         ids = re.findall(r'^\t{3}timing@(\d+)\s*\{', updated, re.M)
-        if ids != ['0', '1', '2', '3', '4']:
+        if ids != ['0'] + [str(i) for i in installed_indices]:
             fail(f'{name}: unexpected MIUICX timing nodes')
         stock = node(updated, r'^\t{3}timing@0\s*\{')[2]
-        for index in miuicx_rates:
+        for index in installed_indices:
             left, right, content = node(updated, rf'^\t{{3}}timing@{index}\s*\{{')
             if content not in (miuicx_mode(name, stock, index),
                                miuicx_mode(name, stock, index, False)):
                 fail(f'{name}: MIUICX timing@{index} has local modifications')
             updated = updated[:left] + updated[right:]
-        marker_line = '\t\t\t' + miuicx_marker + '\n'
+        marker_line = '\t\t\t' + installed_marker + '\n'
         preferred = '\t\tqcom,mdss-dsi-preferred-refresh-rate = <60>;\n'
         if updated.count(marker_line) != 1 or updated.count(preferred) != 1:
             fail(f'{name}: unexpected MIUICX marker or preference')
@@ -700,10 +705,10 @@ for name, label in panels.items():
     start, end, parent = node(central, rf'^&{label}\s*\{{')
     if miuicx_installed:
         ids = re.findall(r'^\t{2}timing@(\d+)\s*\{', parent, re.M)
-        if ids != ['0', '1', '2', '3', '4']:
+        if ids != ['0'] + [str(i) for i in installed_indices]:
             fail(f'{label}: unexpected MIUICX PHY timing nodes')
         stock_phy = node(parent, r'^\t{2}timing@0\s*\{')[2]
-        for index in miuicx_rates:
+        for index in installed_indices:
             left, right, content = node(parent, rf'^\t{{2}}timing@{index}\s*\{{')
             if content != miuicx_phy(stock_phy, index):
                 fail(f'{label}: MIUICX PHY timing@{index} has local modifications')
@@ -798,7 +803,7 @@ for name, (label, _) in (evo_panels.items() if high_refresh else ()):
     suffix = '\t\t};\n\t};\n};\n'
     if updated.count(suffix) != 1:
         fail(f'{name}: cannot safely locate the timing list')
-    addition = '\t\t\t' + miuicx_marker + '\n' + ''.join(miuicx_mode(name, stock, i) for i in miuicx_rates)
+    addition = '\t\t\t' + miuicx_marker + '\n' + ''.join(miuicx_mode(name, stock, i) for i in miuicx_enabled)
     updated = updated.replace(suffix, addition + suffix, 1)
     changes[path] = (original, updated)
     start, end, parent = node(central, rf'^&{label}\s*\{{')
@@ -806,7 +811,7 @@ for name, (label, _) in (evo_panels.items() if high_refresh else ()):
     if parent.count(suffix) != 1:
         fail(f'{label}: cannot safely locate the PHY timing list')
     stock_phy = node(parent, r'^\t{2}timing@0\s*\{')[2]
-    parent = parent.replace(suffix, ''.join(miuicx_phy(stock_phy, i) for i in miuicx_rates) + suffix, 1)
+    parent = parent.replace(suffix, ''.join(miuicx_phy(stock_phy, i) for i in miuicx_enabled) + suffix, 1)
     central = central[:start] + parent + central[end:]
 changes[central_path] = (central_original, central)
 
@@ -827,7 +832,7 @@ for name, rule_index, new_override in ((
     changes[path] = (original, updated)
 
 # libfdt prepends newly overlaid timing nodes. On the reviewed ROM's DTBO this
-# exposes 90 Hz before the original 60 Hz timing even though timing@0 is 60 Hz.
+# exposes 75 Hz before the original 60 Hz timing even though timing@0 is 60 Hz.
 # Keep kernel mode index zero and the DRM preferred mode at the stock 60 Hz.
 display_path = root / 'drivers/gpu/drm/msm/dsi-staging/dsi_display.c'
 display_original = display_path.read_text()
@@ -837,12 +842,12 @@ mode_order_old = ('\t\t_dsi_display_populate_bit_clks(display, start, end, &arra
 mode_order_new = '''\t\t_dsi_display_populate_bit_clks(display, start, end, &array_idx);
 \t}
 
-\t/* The MIUICX Raphael DTBO overlay prepends timing@4 through @1.
-\t * Sort only its exact 60/69/75/81/90 Hz mode set, so index zero remains
+\t/* The MIUICX Raphael DTBO overlay prepends timing@2 and @1.
+\t * Sort only its exact 60/69/75 Hz mode set, so index zero remains
 \t * the stock 60 Hz mode regardless of the overlay implementation.
 \t */
 \t{
-\t\tconst u32 rates[] = { 60, 69, 75, 81, 90 };
+\t\tconst u32 rates[] = { 60, 69, 75 };
 \t\tstruct dsi_display_mode temp;
 \t\tu32 preferred_rate;
 \t\tu32 j;
@@ -873,12 +878,17 @@ mode_order_new = '''\t\t_dsi_display_populate_bit_clks(display, start, end, &arr
 exit:
 \t*out_modes = display->modes;
 '''
-mode_order_legacy = (mode_order_new
+mode_order_previous = (mode_order_new
+    .replace('The MIUICX Raphael DTBO overlay prepends timing@2 and @1.',
+             'The MIUICX Raphael DTBO overlay prepends timing@4 through @1.')
+    .replace('60/69/75 Hz mode set', '60/69/75/81/90 Hz mode set')
+    .replace('{ 60, 69, 75 }', '{ 60, 69, 75, 81, 90 }'))
+mode_order_legacy = (mode_order_previous
     .replace('The MIUICX Raphael DTBO overlay prepends timing@4 through @1.',
              'The reviewed Raphael DTBO overlay prepends timing@3, @2 and @1.')
     .replace('60/69/75/81/90 Hz mode set', '60/72/81/90 Hz mode set')
     .replace('{ 60, 69, 75, 81, 90 }', '{ 60, 72, 81, 90 }'))
-for installed_order in (mode_order_new, mode_order_legacy):
+for installed_order in (mode_order_new, mode_order_previous, mode_order_legacy):
     if display_updated.count(installed_order) == 1:
         display_updated = display_updated.replace(installed_order, mode_order_old, 1)
     elif display_updated.count(installed_order) > 1:
@@ -904,11 +914,11 @@ for path, (original, updated) in changes.items():
 output.mkdir(parents=True, exist_ok=True)
 report = output / 'display-modes.txt'
 if high_refresh:
-    report.write_text('MIUICX R6.1 SS EA8076 port: '
-                      '60, 69, 75, 81 and 90 Hz; original 60 Hz preferred.\n'
+    report.write_text('MIUICX R6.1 SS EA8076 restricted port: '
+                      '60, 69 and 75 Hz; original 60 Hz preferred.\n'
                       'Experimental: full modesets and physical display behavior require testing.\n'
                       'Rebuild the kernel and device tree before packaging.\n')
-    print('Raphael display: MIUICX 60/69/75/81/90 Hz prepared for SS EA8076 panels.')
+    print('Raphael display: MIUICX 60/69/75 Hz prepared for SS EA8076 panels.')
 else:
     report.write_text('Raphael display setup: stock panel timings; experimental high-refresh modes disabled.\n'
                       'Rebuild the kernel and device tree before packaging.\n')
