@@ -30,7 +30,6 @@ Environment:
   DTC_EXT    External dtc executable (default: dtc from PATH)
   STOCK_BOOT_IMG  Working boot.img from the same ROM; enables boot.img packaging
   STOCK_DTBO_IMG  Working dtbo.img from the same ROM; enables DTBO packaging
-  DTBO_INDEX     Verified entry index for other, unrecognized DTBO templates
 
 Examples:
   ./build.sh
@@ -43,7 +42,6 @@ Examples:
   ./build.sh Image.gz dtbs
   STOCK_BOOT_IMG=/path/to/working/boot.img ./build.sh
   STOCK_BOOT_IMG=/path/to/working/boot.img ./build.sh --bootimg-only
-  STOCK_DTBO_IMG=/path/to/working/dtbo.img DTBO_INDEX=0 ./build.sh --dtbo-only
   STOCK_DTBO_IMG=/path/to/original/dtbo.img ./build.sh --dtbo-only
 EOF
 }
@@ -79,9 +77,6 @@ if (( WITH_ROM_DTBO_PATCH )); then
         die '--rom-dtbo-patch can only be used with a build or --dtbo-only.'
     [[ -n ${STOCK_DTBO_IMG:-} ]] ||
         die 'Set STOCK_DTBO_IMG to the original, verified LineageOS 17 DTBO image.'
-    [[ -z ${DTBO_INDEX:-} || $DTBO_INDEX == 11 ]] ||
-        die '--rom-dtbo-patch supports only the verified DTBO entry 11.'
-    DTBO_INDEX=11
 fi
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
@@ -180,18 +175,13 @@ print(hasher.hexdigest())
 PY
         )
         if [[ $rom_dtbo_hash == 2a7fedf9e370b421227879ae1ca035b30028bbdbf7f7265b553770d3c60a9674 ]]; then
-            [[ -z ${DTBO_INDEX:-} || $DTBO_INDEX == 11 ]] ||
-                die 'This verified ROM DTBO uses entry 11; remove the conflicting DTBO_INDEX.'
             WITH_ROM_DTBO_PATCH=1
-            DTBO_INDEX=11
             printf 'Recognized the verified LineageOS 17 DTBO; using entry 11 automatically.\n'
         elif (( WITH_ROM_DTBO_PATCH )); then
             die '--rom-dtbo-patch only supports the exact verified original DTBO image.'
         fi
     fi
-    [[ ${DTBO_INDEX:-} =~ ^[0-9]+(,[0-9]+)*$ ]] ||
-        die 'This DTBO image is not recognized automatically; provide its verified Raphael entry as DTBO_INDEX.'
-    python3 - "$STOCK_DTBO_IMG" "$DTBO_INDEX" <<'PY'
+    python3 - "$STOCK_DTBO_IMG" <<'PY'
 import struct, sys
 with open(sys.argv[1], 'rb') as f:
     raw = f.read(32)
@@ -200,8 +190,6 @@ if len(raw) != 32:
 magic, total, header, entry, count, offset, page, version = struct.unpack('>8I', raw)
 if magic != 0xd7b7ab1e or version not in (0, 1):
     sys.exit('Error: STOCK_DTBO_IMG must be an Android DTBO table image (v0/v1).')
-if any(int(index) >= count for index in sys.argv[2].split(',')):
-    sys.exit(f'Error: DTBO_INDEX must select existing entries 0 through {count - 1}.')
 PY
 fi
 
@@ -302,19 +290,17 @@ PYROMDTBO
 pack_dtbo_image() (
     command -v python3 >/dev/null 2>&1 || die 'python3 is required.'
     [[ -n ${STOCK_DTBO_IMG:-} ]] || die 'Set STOCK_DTBO_IMG to a matching unsigned Android DTBO image.'
-    [[ -n ${DTBO_INDEX:-} ]] || die 'Set DTBO_INDEX to the matching Raphael entry index (or comma-separated indices).'
     if (( WITH_ROM_DTBO_PATCH )); then
         pack_verified_rom_dtbo
         return
     fi
-    python3 - "$STOCK_DTBO_IMG" "$DTBO_INDEX" \
+    python3 - "$STOCK_DTBO_IMG" \
         "$OUT_DIR/arch/arm64/boot/dts/qcom/raphael-sm8150-overlay.dtbo" \
         "$OUT_DIR/dtbo.img" <<'PYDTBO'
-"""Replace explicitly selected Android DTBO table entries; never flash a device."""
+"""Replace one safely identified Raphael overlay; never flash a device."""
 from pathlib import Path
 import gzip
 import os
-import re
 import struct
 import sys
 import tempfile
@@ -394,6 +380,107 @@ def decode(payload, compression, label):
     return result
 
 
+def fdt_nodes(data):
+    """Parse an already validated FDT into node paths and raw property bytes."""
+    _, _, tree, strings, _, _, _, _, string_size, tree_size = struct.unpack_from('>10I', data)
+    names = data[strings:strings + string_size]
+    pos, end, stack, nodes = tree, tree + tree_size, [], {}
+    while pos < end:
+        token, = struct.unpack_from('>I', data, pos)
+        pos += 4
+        if token == 1:
+            terminator = data.index(b'\0', pos, end)
+            stack.append(data[pos:terminator])
+            pos = (terminator + 4) & ~3
+            path = b'/' + b'/'.join(stack[1:])
+            require(path not in nodes, 'duplicate FDT node path')
+            nodes[path] = {}
+        elif token == 2:
+            stack.pop()
+        elif token == 3:
+            length, name = struct.unpack_from('>II', data, pos)
+            pos += 8
+            name = names[name:names.index(b'\0', name)]
+            path = b'/' + b'/'.join(stack[1:])
+            require(name not in nodes[path], 'duplicate FDT property')
+            nodes[path][name] = data[pos:pos + length]
+            pos = (pos + length + 3) & ~3
+        elif token == 4:
+            continue
+        elif token == 9:
+            return nodes
+    raise ValueError('missing FDT end token')
+
+
+def fdt_metadata(data):
+    """Keep FDT version, boot CPU and reservation map when replacing a blob."""
+    _, _, _, _, reservations, version, compatible, boot_cpu, _, _ = struct.unpack_from('>10I', data)
+    saved = []
+    while True:
+        pair = struct.unpack_from('>QQ', data, reservations)
+        reservations += 16
+        if pair == (0, 0):
+            return version, compatible, boot_cpu, tuple(saved)
+        saved.append(pair)
+
+
+PANEL_LABELS = (
+    b'dsi_ss_fhd_ea8076_cmd', b'dsi_ss_fhd_ea8076_global_cmd',
+    b'dsi_samsung_fhd_ea8076_f1_cmd', b'dsi_samsung_fhd_ea8076_f1p2_cmd',
+    b'dsi_samsung_fhd_ea8076_f1p2_2_cmd', b'dsi_samsung_fhd_ea8076_f1mp_cmd',
+)
+PREFERRED = b'qcom,mdss-dsi-preferred-refresh-rate'
+FRAMERATE = b'qcom,mdss-dsi-panel-framerate'
+
+
+def compatible_raphael(candidate, replacement):
+    """Permit only the six reviewed timing additions and preference change."""
+    if candidate.get(b'/', {}).get(b'model') != b'RAPHAEL\0':
+        return False
+    if candidate[b'/'].get(b'qcom,board-id') != struct.pack('>II', 40, 0):
+        return False
+    symbols = candidate.get(b'/__symbols__', {})
+    dest_symbols = replacement.get(b'/__symbols__', {})
+    expected = {path: dict(props) for path, props in candidate.items()}
+    panels = set()
+    for label in PANEL_LABELS:
+        encoded = symbols.get(label, b'')
+        if not encoded.endswith(b'\0') or encoded != dest_symbols.get(label):
+            return False
+        panel = encoded[:-1]
+        if panel in panels or panel not in candidate or panel not in replacement:
+            return False
+        panels.add(panel)
+        timings = panel + b'/qcom,mdss-dsi-display-timings'
+        if timings not in candidate or timings + b'/timing@0' not in candidate:
+            return False
+        old_preference = candidate[panel].get(PREFERRED)
+        if old_preference not in (None, struct.pack('>I', 60), struct.pack('>I', 75)):
+            return False
+        if replacement[panel].get(PREFERRED) != struct.pack('>I', 60):
+            return False
+        expected[panel][PREFERRED] = struct.pack('>I', 60)
+        for suffix, rate in ((b'timing@1', 75), (b'timing@3', 90)):
+            path = timings + b'/' + suffix
+            props = replacement.get(path)
+            if props is None or props.get(FRAMERATE) != struct.pack('>I', rate):
+                return False
+            if any(b'phandle' in key or b'gpio' in key or key.endswith(b'-supply') for key in props):
+                return False
+            if any(p.startswith(path + b'/') for p in replacement):
+                return False
+            if path in candidate and candidate[path] != props:
+                return False
+            expected[path] = dict(props)
+    if expected != replacement:
+        return False
+    # Node and property order can determine the bootloader's timing indices.
+    if [path for path in replacement if path in candidate] != list(candidate):
+        return False
+    return all([key for key in replacement[path] if key in props] == list(props)
+               for path, props in candidate.items())
+
+
 def encode(payload, compression):
     if compression == 1:
         return zlib.compress(payload, 9)
@@ -402,7 +489,7 @@ def encode(payload, compression):
     return payload
 
 
-def repack_bytes(image, replacement, selection):
+def repack_bytes(image, replacement):
     require(len(image) >= 32, 'truncated Android DTBO header')
     require(image[-64:-60] != b'AVBf', 'AVB-signed DTBO templates need re-signing; use an unsigned template and handle ROM signing separately')
     magic, total, header_size, entry_size, count, entries_at, page_size, version = struct.unpack_from('>8I', image)
@@ -411,9 +498,10 @@ def repack_bytes(image, replacement, selection):
     require(32 <= header_size <= entries_at and entry_size >= 32 and count > 0, 'invalid DTBO table header/entry dimensions')
     end_entries = entries_at + count * entry_size
     require(end_entries <= total <= len(image), 'DTBO table or total_size exceeds the template bounds')
-    require(selection and all(0 <= index < count for index in selection), f'DTBO_INDEX must select entries between 0 and {count - 1}')
     validate_fdt(replacement, 'compiled Raphael overlay')
-    entries, ranges = [], set()
+    replacement_nodes = fdt_nodes(replacement)
+    replacement_metadata = fdt_metadata(replacement)
+    entries, ranges, matches = [], set(), []
     for index in range(count):
         at = entries_at + index * entry_size
         values = struct.unpack_from('>8I', image, at)
@@ -421,7 +509,9 @@ def repack_bytes(image, replacement, selection):
         require(length > 0 and end_entries <= offset <= total and length <= total - offset, f'DTBO entry {index}: invalid payload bounds')
         method = (values[4] & 15) if version == 1 else 0
         payload = image[offset:offset + length]
-        decode(payload, method, f'DTBO entry {index}')
+        decoded = decode(payload, method, f'DTBO entry {index}')
+        if fdt_metadata(decoded) == replacement_metadata and compatible_raphael(fdt_nodes(decoded), replacement_nodes):
+            matches.append(index)
         entries.append((at, length, offset, method, payload))
         ranges.add((offset, offset + length))
     ordered = sorted(ranges)
@@ -429,6 +519,9 @@ def repack_bytes(image, replacement, selection):
         require(left[1] <= right[0], 'DTBO payloads partially overlap; exact shared payloads are allowed')
         require(not any(image[left[1]:right[0]]), 'unsupported nonzero data between DTBO payloads')
     require(not any(image[ordered[-1][1]:total]) and not any(image[total:]), 'unsupported nonzero data after DTBO payloads')
+    require(len(matches) == 1,
+            f'Cannot safely identify exactly one compatible Raphael overlay (found {len(matches)}); the ROM may contain different board or display data.')
+    selection = set(matches)
     # Both compact AOSP images and page-aligned vendor images are valid.
     aligned = page_size > 0 and page_size & (page_size - 1) == 0 and all(start % page_size == 0 for start, _ in ordered)
     result = bytearray(image[:ordered[0][0]])
@@ -453,21 +546,18 @@ def repack_bytes(image, replacement, selection):
     if len(image) > total:
         require(len(result) <= len(image), 'rebuilt DTBO does not fit the template padded image size')
         result.extend(b'\0' * (len(image) - len(result)))
-    return bytes(result)
+    return bytes(result), matches[0]
 
 
 def main(arguments):
-    require(len(arguments) == 4, 'usage: dtbo_repack.py STOCK_DTBO_IMG DTBO_INDEX COMPILED_OVERLAY OUTPUT')
-    stock, indices, raw, destination = arguments
-    require(indices and all(re.fullmatch(r'[0-9]+', token.strip()) for token in indices.split(',')), 'DTBO_INDEX must be an explicit index or comma-separated indices, such as 0 or 0,1')
-    selected = [int(token.strip()) for token in indices.split(',')]
-    require(len(selected) == len(set(selected)), 'DTBO_INDEX contains duplicate indices')
+    require(len(arguments) == 3, 'usage: dtbo_repack.py STOCK_DTBO_IMG COMPILED_OVERLAY OUTPUT')
+    stock, raw, destination = arguments
     stock, raw, destination = map(Path, (stock, raw, destination))
     require(stock.is_file() and raw.is_file(), 'missing stock DTBO image or compiled Raphael overlay')
     require(not destination.is_dir(), 'DTBO output must be a filename, not a directory')
     for source in (stock, raw):
         require(destination.resolve() != source.resolve() and not (destination.exists() and os.path.samefile(destination, source)), 'DTBO output must differ from both inputs')
-    result = repack_bytes(stock.read_bytes(), raw.read_bytes(), set(selected))
+    result, selected = repack_bytes(stock.read_bytes(), raw.read_bytes())
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
@@ -478,7 +568,7 @@ def main(arguments):
     finally:
         if temporary and temporary.exists():
             temporary.unlink()
-    print(f'DTBO image created: {destination} (replaced entries {",".join(map(str, selected))})')
+    print(f'DTBO image created: {destination} (automatically identified entry {selected})')
     print('DTBO signing/AVB verification, if required by the ROM, is separate.')
 
 
@@ -1488,5 +1578,5 @@ if [[ -n ${STOCK_DTBO_IMG:-} ]]; then
 else
     printf '\nDisplay device tree: %s/arch/arm64/boot/dts/qcom/raphael-sm8150-overlay.dtbo\n' "$OUT_DIR"
     printf 'To package your verified original DTBO, set STOCK_DTBO_IMG and run ./build.sh --dtbo-only.\n'
-    printf 'Other DTBO templates require a verified DTBO_INDEX.\n'
+    printf 'Other templates must contain a uniquely identified compatible Raphael overlay.\n'
 fi
