@@ -219,7 +219,7 @@ import hashlib, os, pathlib, shutil, sys, tempfile
 source, output = map(pathlib.Path, sys.argv[1:3])
 high_refresh = sys.argv[3] == '1'
 original_hash = '2a7fedf9e370b421227879ae1ca035b30028bbdbf7f7265b553770d3c60a9674'
-result_hash = '8b5203867bc40fb399c76ea366f03eb6bdb8876f2716d1dff91eefc7dec38729'
+result_hash = '34d0a33d2302d76f7d35d8c43309c89817a26b13dd50b62509376fe6a9d95cc3'
 def sha256(path):
     h = hashlib.sha256()
     with path.open('rb') as stream:
@@ -243,61 +243,61 @@ if not high_refresh:
 import base64, lzma, subprocess
 # Fixed MIUICX R6.1 SS panel delta for the original 32 MiB DTBO (entry 11).
 encoded = b"""
-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
-6doAAfoXuyQAAJeCq1CxxGf7AgAAAAAEWVo=
+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
 """
 with tempfile.TemporaryDirectory(prefix='.evo-dtbo-', dir=output.parent) as work:
     patch = pathlib.Path(work) / 'patch.zst'
@@ -481,6 +481,10 @@ evo_panels = {
 miuicx_marker = '/* MIUICX R6.1 SS panel modes: 69/75/81/90 Hz. */'
 miuicx_rates = {1: (69, 1150000000), 2: (75, 1250000000),
                 3: (81, 1350000000), 4: (90, 1500000000)}
+# DRM mode equality ignores the explicit vrefresh field. The MIUICX modes
+# share porch totals, so distinct transfer budgets give them distinct pixel
+# clocks and prevent Android from collapsing 75/81/90 Hz into 69 Hz.
+miuicx_transfers = {1: 13334, 2: 12196, 3: 11364, 4: 10205}
 miuicx_switch = {
     'dsi-panel-ss-fhd-ea8076-cmd.dtsi':
         '39 00 00 00 00 00 03 F0 5A 5A 39 00 00 00 00 00 03 FC 5A 5A '
@@ -569,7 +573,7 @@ def evo_phy(index):
             '\t\t\tqcom,display-topology = <1 0 1>;\n'
             '\t\t\tqcom,default-topology-index = <0>;\n\t\t};\n')
 
-def miuicx_mode(name, stock, index):
+def miuicx_mode(name, stock, index, with_transfer=True):
     rate, clock = miuicx_rates[index]
     command = re.search(r'qcom,mdss-dsi-on-command\s*=\s*\[(.*?)\]', stock, re.S)
     if not command:
@@ -603,7 +607,9 @@ def miuicx_mode(name, stock, index):
     end = result.rfind('\t\t\t};')
     if end < 0:
         fail(f'{name}: cannot locate timing node end')
-    addition = ('\t\t\t\tqcom,mdss-dsi-timing-switch-command = ['
+    transfer = (f'\t\t\t\tqcom,mdss-mdp-transfer-time-us = <{miuicx_transfers[index]}>;\n'
+                if with_transfer else '')
+    addition = (transfer + '\t\t\t\tqcom,mdss-dsi-timing-switch-command = ['
                 + miuicx_switch[name] + '];\n'
                 '\t\t\t\tqcom,mdss-dsi-timing-switch-command-state = "dsi_lp_mode";\n')
     return result[:end] + addition + result[end:]
@@ -634,7 +640,8 @@ for name, label in panels.items():
         stock = node(updated, r'^\t{3}timing@0\s*\{')[2]
         for index in miuicx_rates:
             left, right, content = node(updated, rf'^\t{{3}}timing@{index}\s*\{{')
-            if content != miuicx_mode(name, stock, index):
+            if content not in (miuicx_mode(name, stock, index),
+                               miuicx_mode(name, stock, index, False)):
                 fail(f'{name}: MIUICX timing@{index} has local modifications')
             updated = updated[:left] + updated[right:]
         marker_line = '\t\t\t' + miuicx_marker + '\n'
