@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # All-in-one Raphael branch 17 build: Boolx Clang 22, NetHunter, 88x2bu,
-# KernelSU-Next legacy, stock Raphael display, external DTC and boot/DTBO packaging.
+# KernelSU-Next legacy, experimental Evolution-X display modes, boot/DTBO packaging.
 set -Eeuo pipefail
 
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
@@ -15,7 +15,7 @@ Options:
   --ksu          Download/integrate KernelSU-Next legacy with manual hooks
   --nethunter    Enable the NetHunter kernel configuration profile
   --bootimg-only Package an existing compiled kernel using STOCK_BOOT_IMG
-  --dtbo-only    Copy the validated stock DTBO image using STOCK_DTBO_IMG
+  --dtbo-only    Create the reviewed ROM-specific DTBO using STOCK_DTBO_IMG
   --wifi-diagnose Collect adapter diagnostics through adb
   --help, -h     Show this help
 Feature flags can be combined and may appear before or after make targets.
@@ -42,6 +42,34 @@ Examples:
   STOCK_BOOT_IMG=/path/to/working/boot.img ./build.sh
   STOCK_BOOT_IMG=/path/to/working/boot.img ./build.sh --bootimg-only
   STOCK_DTBO_IMG=/path/to/original/dtbo.img ./build.sh --dtbo-only
+
+Missing toolchains are downloaded from the Boolx-22 GitHub release.
+The pinned 88x2bu driver is downloaded and enabled for Archer T3U Plus (2357:0138).
+With --ksu, official KernelSU-Next legacy is pinned for this 4.14 kernel.
+All source/configuration fixes and boot.img packaging are embedded in this file;
+copy only build.sh into the root of a complete branch 17 checkout to use it.
+With --nethunter, enable chroot IPC, USB gadgets/serial, USB Bluetooth, mac80211,
+and packet filtering. The Kali rootfs and Android apps are installed separately.
+Enabled NetHunter settings are recorded in out/nethunter-config.txt.
+Repeat the desired flags on every build; changing flags restores pre-feature
+settings and preserves unrelated configuration edits. Old configurations are
+backed up when migrating from the previous always-enabled script.
+Display modes: 60/72/81/90 Hz for two SS EA8076 variants; 60 Hz preferred.
+Higher modes are experimental and require a matching kernel and DTBO.
+Requires a Linux x86_64 host.
+Debian/Ubuntu host dependencies:
+  build-essential bc bison flex libssl-dev libelf-dev zlib1g-dev
+  python3 perl pkg-config cpio gzip lz4 curl tar zstd device-tree-compiler
+
+Outputs: out/arch/arm64/boot/Image, Image.gz, device trees under boot/dts/,
+         out/vmlinux, out/System.map, and modules when enabled.
+Set STOCK_BOOT_IMG, or place stock_boot.img beside this script, to create out/boot.img.
+Use a template from the same Raphael ROM. Its ramdisk and device trees are
+preserved. magiskboot is downloaded automatically; MAGISKBOOT can override it.
+ROM-specific image signing is separate.
+DTBO packaging supports the reviewed original LineageOS 17 Raphael image only.
+It creates a fixed experimental image; preserve the original for recovery.
+Parent AVB acceptance and panel behavior require device testing.
 EOF
 }
 
@@ -170,229 +198,94 @@ fi
 
 pack_dtbo_image() (
     command -v python3 >/dev/null 2>&1 || die 'python3 is required.'
+    command -v zstd >/dev/null 2>&1 || die 'zstd is required to create the reviewed Evolution-X DTBO.'
     [[ -n ${STOCK_DTBO_IMG:-} ]] || die 'Set STOCK_DTBO_IMG to the original ROM DTBO image.'
-    python3 - "$STOCK_DTBO_IMG" "$OUT_DIR/dtbo.img" <<'PYSTOCKDTBO'
-"""Validate and copy the original Android DTBO without changing any bytes."""
-from pathlib import Path
-import hashlib
-import os
-import struct
-import sys
-import tempfile
-import zlib
+    python3 - "$STOCK_DTBO_IMG" "$OUT_DIR/dtbo.img" <<'PYEVDTBO'
+"""Reconstruct a reviewed Raphael ROM DTBO, preserving ROM-specific data."""
+import base64, hashlib, lzma, os, pathlib, subprocess, sys, tempfile
 
-DT_TABLE_MAGIC = 0xD7B7AB1E
-FDT_MAGIC = 0xD00DFEED
-
-def require(condition, message):
-    if not condition:
-        raise ValueError(message)
-
-
-def validate_fdt(data, label):
-    require(len(data) >= 40, f'{label}: truncated FDT header')
-    magic, size, tree, strings, reservations, version, compatible, _, string_size, tree_size = struct.unpack_from('>10I', data)
-    require(magic == FDT_MAGIC and size == len(data), f'{label}: expected one exact FDT blob')
-    require(version >= 17 and compatible <= 17, f'{label}: unsupported FDT version')
-    require(tree >= 40 and tree % 4 == 0 and tree_size % 4 == 0 and tree + tree_size <= size, f'{label}: invalid FDT structure bounds')
-    require(strings >= 40 and strings + string_size <= size, f'{label}: invalid FDT strings bounds')
-    require(reservations >= 40 and reservations % 8 == 0, f'{label}: invalid FDT reservation map')
-    end_reservations = reservations
-    while True:
-        require(end_reservations + 16 <= size, f'{label}: unterminated FDT reservation map')
-        address, length = struct.unpack_from('>QQ', data, end_reservations)
-        end_reservations += 16
-        if address == 0 and length == 0:
-            break
-    ranges = sorted([(0, 40), (reservations, end_reservations), (tree, tree + tree_size), (strings, strings + string_size)])
-    for left, right in zip(ranges, ranges[1:]):
-        require(left[1] <= right[0], f'{label}: overlapping FDT sections')
-    position, limit, depth, roots, ended = tree, tree + tree_size, 0, 0, False
-    names = data[strings:strings + string_size]
-    while position + 4 <= limit:
-        token, = struct.unpack_from('>I', data, position)
-        position += 4
-        if token == 1:  # FDT_BEGIN_NODE
-            end = data.find(b'\0', position, limit)
-            require(end >= 0, f'{label}: unterminated FDT node name')
-            if depth == 0:
-                roots += 1
-                require(roots == 1 and end == position, f'{label}: invalid FDT root')
-            depth += 1
-            position = (end + 4) & ~3
-        elif token == 2:  # FDT_END_NODE
-            require(depth > 0, f'{label}: unbalanced FDT nodes')
-            depth -= 1
-        elif token == 3:  # FDT_PROP
-            require(depth > 0 and position + 8 <= limit, f'{label}: invalid FDT property')
-            length, name = struct.unpack_from('>II', data, position)
-            position += 8
-            require(name < len(names) and names.find(b'\0', name) >= 0, f'{label}: invalid FDT property name')
-            require(position + length <= limit, f'{label}: truncated FDT property')
-            position = (position + length + 3) & ~3
-        elif token == 4:  # FDT_NOP
-            pass
-        elif token == 9:  # FDT_END
-            require(depth == 0 and roots == 1 and not any(data[position:limit]), f'{label}: invalid FDT end')
-            ended = True
-            break
-        else:
-            raise ValueError(f'{label}: unknown FDT structure token {token}')
-    require(ended, f'{label}: missing FDT end token')
-
-
-def decode(payload, compression, label):
-    if compression == 0:
-        result = payload
-    else:
-        # AOSP v1: 1=zlib, 2=gzip; the low four flag bits hold the method.
-        require(compression in (1, 2), f'{label}: unsupported compression {compression}')
-        inflater = zlib.decompressobj(15 if compression == 1 else 31)
-        result = inflater.decompress(payload) + inflater.flush()
-        require(inflater.eof and not inflater.unused_data and not inflater.unconsumed_tail, f'{label}: invalid compressed FDT stream')
-    validate_fdt(result, label)
-    return result
-
-
-def fdt_nodes(data):
-    """Parse an already validated FDT into node paths and raw property bytes."""
-    _, _, tree, strings, _, _, _, _, string_size, tree_size = struct.unpack_from('>10I', data)
-    names = data[strings:strings + string_size]
-    pos, end, stack, nodes = tree, tree + tree_size, [], {}
-    while pos < end:
-        token, = struct.unpack_from('>I', data, pos)
-        pos += 4
-        if token == 1:
-            terminator = data.index(b'\0', pos, end)
-            stack.append(data[pos:terminator])
-            pos = (terminator + 4) & ~3
-            path = b'/' + b'/'.join(stack[1:])
-            require(path not in nodes, 'duplicate FDT node path')
-            nodes[path] = {}
-        elif token == 2:
-            stack.pop()
-        elif token == 3:
-            length, name = struct.unpack_from('>II', data, pos)
-            pos += 8
-            name = names[name:names.index(b'\0', name)]
-            path = b'/' + b'/'.join(stack[1:])
-            require(name not in nodes[path], 'duplicate FDT property')
-            nodes[path][name] = data[pos:pos + length]
-            pos = (pos + length + 3) & ~3
-        elif token == 4:
-            continue
-        elif token == 9:
-            return nodes
-    raise ValueError('missing FDT end token')
-
-
-def fdt_metadata(data):
-    """Keep FDT version, boot CPU and reservation map when replacing a blob."""
-    _, _, _, _, reservations, version, compatible, boot_cpu, _, _ = struct.unpack_from('>10I', data)
-    saved = []
-    while True:
-        pair = struct.unpack_from('>QQ', data, reservations)
-        reservations += 16
-        if pair == (0, 0):
-            return version, compatible, boot_cpu, tuple(saved)
-        saved.append(pair)
-
-
-
-def verify_raphael(nodes, label):
-    require(nodes.get(b'/', {}).get(b'qcom,board-id') == struct.pack('>II', 40, 0),
-            f'{label}: Raphael board identity differs')
-    panels = {path for path, props in nodes.items()
-              if b'ea8076' in props.get(b'qcom,mdss-dsi-panel-name', b'').lower()}
-    symbols = nodes.get(b'/__symbols__', {})
-    refs = set()
-    for key, value in symbols.items():
-        if b'ea8076' in key.lower() and key.endswith(b'_cmd'):
-            require(value.endswith(b'\0') and b'\0' not in value[:-1],
-                    f'{label}: invalid panel symbol')
-            ref = value[:-1]
-            require(ref not in refs, f'{label}: ambiguous panel symbols')
-            refs.add(ref)
-    require(panels and panels == refs, f'{label}: cannot verify all Raphael panel variants')
-    for panel in panels:
-        props = nodes[panel]
-        require(b'qcom,mdss-dsi-pan-enable-dynamic-fps' not in props,
-                f'{label}: panel has dynamic refresh modes; cannot verify stock 60 Hz')
-        prefix = panel + b'/qcom,mdss-dsi-display-timings/'
-        rates = []
-        for path, timing in nodes.items():
-            if path.startswith(prefix) and b'/' not in path[len(prefix):] and path[len(prefix):].startswith(b'timing@'):
-                value = timing.get(b'qcom,mdss-dsi-panel-framerate', b'')
-                require(len(value) == 4, f'{label}: missing or invalid panel refresh rate')
-                rates.append(struct.unpack('>I', value)[0])
-        require(rates == [60], f'{label}: panel is not stock 60 Hz; supply the original ROM DTBO')
-    # Other fragments in this overlay could override panel timing properties.
-    for props in nodes.values():
-        for key in (b'qcom,mdss-dsi-panel-framerate', b'qcom,mdss-dsi-preferred-refresh-rate'):
-            if key in props:
-                value = props[key]
-                require(len(value) == 4, f'{label}: invalid display refresh property')
-                require(struct.unpack('>I', value)[0] not in (75, 90),
-                        f'{label}: contains a 75/90 Hz display patch; supply the original ROM DTBO')
-
-
-def validate_table(image):
-    require(len(image) >= 32, 'truncated Android DTBO header')
-    magic, total, header, entry, count, offset, page, version = struct.unpack_from('>8I', image)
-    require(magic == DT_TABLE_MAGIC and version in (0, 1), 'expected an Android DTBO table image (v0/v1)')
-    require(32 <= header <= offset and entry >= 32 and count > 0, 'invalid DTBO table dimensions')
-    end_entries = offset + count * entry
-    require(end_entries <= total <= len(image), 'invalid DTBO image bounds')
-    ranges, raphael = set(), []
-    for index in range(count):
-        length, start, _, _, flags, _, _, _ = struct.unpack_from('>8I', image, offset + index * entry)
-        require(length > 0 and end_entries <= start <= total and length <= total - start,
-                f'DTBO entry {index}: invalid payload bounds')
-        ranges.add((start, start + length))
-        method = flags & 15 if version == 1 else 0
-        decoded = decode(image[start:start + length], method, f'DTBO entry {index}')
-        nodes = fdt_nodes(decoded)
-        if nodes.get(b'/', {}).get(b'model') == b'RAPHAEL\0':
-            verify_raphael(nodes, f'DTBO entry {index}')
-            raphael.append(index)
-    ordered = sorted(ranges)
-    for left, right in zip(ordered, ordered[1:]):
-        require(left[1] <= right[0], 'DTBO payloads partially overlap')
-    require(len(raphael) == 1, f'cannot uniquely verify a stock Raphael overlay (found {len(raphael)})')
-    return raphael[0]
-
-
-def main(arguments):
-    require(len(arguments) == 2, 'usage: stock_dtbo_copy.py STOCK_DTBO_IMG OUTPUT')
-    source, output = map(Path, arguments)
-    require(source.is_file(), 'original ROM DTBO image is missing')
-    require(not output.is_dir(), 'DTBO output must be a file')
-    require(source.resolve() != output.resolve() and not (output.exists() and os.path.samefile(source, output)),
-            'DTBO output must differ from the original image')
-    image = source.read_bytes()
-    selected = validate_table(image)
-    digest = hashlib.sha256(image).digest()
-    temporary = None
+source, output = map(pathlib.Path, sys.argv[1:])
+original_hash = '2a7fedf9e370b421227879ae1ca035b30028bbdbf7f7265b553770d3c60a9674'
+result_hash = 'ece39051f2fa608e8ead9ec4770398d2448af5a443a39049c9cfc544104bf5e5'
+def sha256(path):
+    h = hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1048576), b''):
+            h.update(chunk)
+    return h.hexdigest()
+if source.resolve() == output.resolve() or (output.exists() and os.path.samefile(source, output)):
+    sys.exit('Error: DTBO output must differ from the original image.')
+if sha256(source) != original_hash:
+    sys.exit('Error: Evolution-X DTBO packaging supports only the verified original LineageOS 17 Raphael DTBO from this setup; other ROM images need a separately reviewed port.')
+# Fixed, reviewed delta for the original 32 MiB DTBO (entry 11).
+encoded = b"""
+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
+"""
+with tempfile.TemporaryDirectory(prefix='.evo-dtbo-', dir=output.parent) as work:
+    patch = pathlib.Path(work) / 'patch.zst'
+    result = pathlib.Path(work) / 'dtbo.img'
     try:
-        with tempfile.NamedTemporaryFile(dir=output.parent, prefix='.stock-dtbo-', delete=False) as stream:
-            temporary = Path(stream.name)
-            stream.write(image)
-        require(hashlib.sha256(temporary.read_bytes()).digest() == digest, 'stock DTBO copy failed its SHA-256 check')
-        temporary.replace(output)
-    finally:
-        if temporary and temporary.exists():
-            temporary.unlink()
-    print(f'Original stock DTBO copied unchanged to: {output} (verified Raphael entry {selected})')
-    print('Existing AVB footer and all ROM entries are preserved; no device was flashed.')
-
-
-if __name__ == '__main__':
-    try:
-        main(sys.argv[1:])
-    except (OSError, ValueError, struct.error, zlib.error) as error:
-        print(f'Error: {error}', file=sys.stderr)
-        sys.exit(1)
-PYSTOCKDTBO
+        patch.write_bytes(lzma.decompress(base64.b64decode(encoded)))
+        subprocess.run(['zstd', '-q', '-d', '--patch-from=' + str(source), str(patch), '-o', str(result)], check=True)
+    except (lzma.LZMAError, ValueError, subprocess.CalledProcessError) as exc:
+        sys.exit(f'Error: cannot reconstruct the reviewed DTBO: {exc}')
+    if sha256(result) != result_hash:
+        sys.exit('Error: reconstructed DTBO failed its SHA-256 check.')
+    os.replace(result, output)
+print(f'Experimental Evolution-X DTBO created: {output}')
+print('This is a fixed ROM-specific 60/72/81/90 Hz image, not the current compiled overlay.')
+print('Keep the original; parent AVB acceptance and panel behavior require device testing.')
+PYEVDTBO
 )
 
 make_boot_image() (
@@ -550,6 +443,12 @@ base = Path('arch/arm64/boot/dts/qcom')
 panels = json.loads(r'''{"dsi-panel-ss-fhd-ea8076-cmd.dtsi":"dsi_ss_fhd_ea8076_cmd","dsi-panel-ss-fhd-ea8076-global-cmd.dtsi":"dsi_ss_fhd_ea8076_global_cmd","dsi-panel-samsung-fhd-ea8076-f1-cmd.dtsi":"dsi_samsung_fhd_ea8076_f1_cmd","dsi-panel-samsung-fhd-ea8076-f1mp-cmd.dtsi":"dsi_samsung_fhd_ea8076_f1mp_cmd","dsi-panel-samsung-fhd-ea8076-f1p2-cmd.dtsi":"dsi_samsung_fhd_ea8076_f1p2_cmd","dsi-panel-samsung-fhd-ea8076-f1p2-2-cmd.dtsi":"dsi_samsung_fhd_ea8076_f1p2_2_cmd"}''')
 driver_edits = json.loads(r'''{"drivers/gpu/drm/msm/dsi-staging/dsi_panel.c":[["\ttiming = &mode->timing;\n\n\tif (panel_mode == DSI_OP_CMD_MODE) {\n","\ttiming = &mode->timing;\n\n\t/* Opt-in timings derive the command-mode pixel clock from the transfer\n\t * budget directly. Dividing by transfer time before multiplication would\n\t * truncate to a whole Hz and undershoot the matching DSI link clock.\n\t * Existing timings keep the original calculation below.\n\t */\n\tif (utils->read_bool(utils->data,\n\t\t\t\"qcom,mdss-dsi-transfer-time-pclk\")) {\n\t\tif (panel_mode != DSI_OP_CMD_MODE || timing->dsc_enabled ||\n\t\t    !timing->refresh_rate || !timing->clk_rate_hz ||\n\t\t    !priv_info->mdp_transfer_time_us ||\n\t\t    priv_info->mdp_transfer_time_us >=\n\t\t\tTICKS_IN_MICRO_SECOND / timing->refresh_rate) {\n\t\t\tpr_err(\"invalid clock-derived command-mode transfer budget\\n\");\n\t\t\treturn -EINVAL;\n\t\t}\n\t\tpixel_clk_khz = (u64)DSI_H_ACTIVE_DSC(timing) *\n\t\t\ttiming->v_active * 1000;\n\t\tdo_div(pixel_clk_khz, priv_info->mdp_transfer_time_us);\n\t\tmode->pixel_clk_khz = pixel_clk_khz;\n\t\treturn 0;\n\t}\n\n\tif (panel_mode == DSI_OP_CMD_MODE) {\n"]],"drivers/gpu/drm/msm/dsi-staging/dsi_drm.c":[["\t\t/* No DMS/VRR when drm pipeline is changing */\n\t\tif (!drm_mode_equal(&cur_mode, adjusted_mode) &&\n","\t\t/* Without panel timing-switch commands, use a complete modeset so\n\t\t * the destination mode's full on/off command sequences are sent.\n\t\t * No DMS/VRR when the DRM pipeline is changing.\n\t\t */\n\t\tif (display->panel->dms_mode != DSI_DMS_MODE_DISABLED &&\n\t\t\t!drm_mode_equal(&cur_mode, adjusted_mode) &&\n"],["static void dsi_drm_update_dtd(struct edid *edid,\n\t\tstruct dsi_display_mode *modes, u32 modes_count)\n","static void dsi_drm_update_dtd(struct edid *edid,\n\t\tstruct dsi_display_mode *modes, u32 modes_count,\n\t\tu32 preferred_index, bool nominal_preferred)\n"],["\t\tstruct dsi_display_mode *mode = &modes[i];\n\t\tstruct dsi_mode_info *timing = &mode->timing;\n","\t\tu32 mode_index = i == 0 ? preferred_index :\n\t\t\t(i <= preferred_index ? i - 1 : i);\n\t\tstruct dsi_display_mode *mode = &modes[mode_index];\n\t\tstruct dsi_mode_info *timing = &mode->timing;\n"],["\t\tdtd->pixel_clock = mode->pixel_clk_khz / 10;\n","\t\t/* A command-mode transfer clock is not its nominal scan clock. */\n\t\tif (i == 0 && nominal_preferred)\n\t\t\tdtd->pixel_clock = div_u64((u64)(timing->h_active + h_blank) *\n\t\t\t\t(timing->v_active + v_blank) * timing->refresh_rate +\n\t\t\t\t5000, 10000);\n\t\telse\n\t\t\tdtd->pixel_clock = mode->pixel_clk_khz / 10;\n"],["\tu32 count = 0, edid_size;\n\tstruct dsi_display_mode *modes = NULL;\n","\tu32 count = 0, edid_size, preferred_index = 0, preferred_rate = 0;\n\tbool nominal_preferred = false;\n\tstruct dsi_display_mode *modes = NULL;\n"],["\tfor (i = 0; i < count; i++) {\n\t\tstruct drm_display_mode *m;\n","\t/* Keep source mode order and bootloader timing indices unchanged. */\n\tif (display->panel &&\n\t    !display->panel->utils.read_u32(display->panel->utils.data,\n\t\t\t\"qcom,mdss-dsi-preferred-refresh-rate\",\n\t\t\t&preferred_rate)) {\n\t\tfor (i = 0; i < count; i++) {\n\t\t\tif (modes[i].timing.refresh_rate == preferred_rate) {\n\t\t\t\tpreferred_index = i;\n\t\t\t\tnominal_preferred = true;\n\t\t\t\tbreak;\n\t\t\t}\n\t\t}\n\t}\n\n\tfor (i = 0; i < count; i++) {\n\t\tstruct drm_display_mode *m;\n"],["\t\t/* set the first mode in list as preferred */\n\t\tif (i == 0)\n","\t\t/* Prefer the requested rate, or the first mode if unspecified. */\n\t\tif (i == preferred_index)\n"],["\tdsi_drm_update_dtd(&edid, modes, count);\n","\tdsi_drm_update_dtd(&edid, modes, count, preferred_index, nominal_preferred);\n"]],"Documentation/devicetree/bindings/drm/msm/mdss-dsi-panel.txt":[["- qcom,mdss-dsi-on-command-state:","- qcom,mdss-dsi-transfer-time-pclk: Boolean on a command-mode timing node.\n\t\t\t\t\tCalculate pixel clock directly from active pixels and\n\t\t\t\t\tqcom,mdss-mdp-transfer-time-us, avoiding whole-Hz\n\t\t\t\t\ttruncation. Requires an explicit nonzero panel clock,\n\t\t\t\t\ta positive transfer time shorter than one frame,\n\t\t\t\t\tand an uncompressed command-mode timing.\n\t\t\t\t\tAbsent: retain the existing pixel-clock calculation.\n- qcom,mdss-dsi-on-command-state:"],["- qcom,mdss-dsi-transfer-time-pclk: Boolean on a command-mode timing node.\n","- qcom,mdss-dsi-preferred-refresh-rate: Preferred display mode refresh rate, in Hz.\n\t\t\t\t\tIf unavailable, the first timing remains preferred.\n- qcom,mdss-dsi-transfer-time-pclk: Boolean on a command-mode timing node.\n"]],"drivers/gpu/drm/msm/sde/sde_encoder.c":[["void sde_encoder_kickoff(struct drm_encoder *drm_enc, bool is_error)\n{\n\tstruct sde_encoder_virt *sde_enc;\n","void sde_encoder_kickoff(struct drm_encoder *drm_enc, bool is_error)\n{\n\tstatic bool first_primary_dsi_kickoff = true;\n\tstruct sde_encoder_virt *sde_enc;\n"],["\t/* allow phys encs to handle any post-kickoff business */\n\tfor (i = 0; i < sde_enc->num_phys_encs; i++) {\n\t\tphys = sde_enc->phys_encs[i];\n\t\tif (phys && phys->ops.handle_post_kickoff)\n\t\t\tphys->ops.handle_post_kickoff(phys);\n\t}\n\n\tif (sde_enc->disp_info.intf_type == DRM_MODE_CONNECTOR_DSI &&\n","\t/* allow phys encs to handle any post-kickoff business */\n\tfor (i = 0; i < sde_enc->num_phys_encs; i++) {\n\t\tphys = sde_enc->phys_encs[i];\n\t\tif (phys && phys->ops.handle_post_kickoff)\n\t\t\tphys->ops.handle_post_kickoff(phys);\n\t}\n\n\t/* The bootloader initializes the panel at 60 Hz. If userspace selects a\n\t * different mode for the first continuous-splash frame, request one\n\t * existing ESD-recovery cycle to send that mode's complete on sequence.\n\t * Consume the flag only for a valid primary DSI kickoff; a normal 60 Hz\n\t * boot does not reset, and DisplayPort/secondary kickoffs cannot claim it.\n\t */\n\tif (!is_error && sde_enc->disp_info.intf_type == DRM_MODE_CONNECTOR_DSI &&\n\t\t\tsde_enc->disp_info.is_primary && sde_enc->crtc &&\n\t\t\tsde_enc->cur_master && sde_enc->cur_master->connector &&\n\t\t\tcmpxchg(&first_primary_dsi_kickoff, true, false) &&\n\t\t\tsde_enc->crtc->mode.vrefresh != 60) {\n\t\tstruct sde_connector *conn = container_of(\n\t\t\tsde_enc->cur_master->connector, struct sde_connector, base);\n\t\tstruct drm_event event = {\n\t\t\t.type = DRM_EVENT_PANEL_DEAD,\n\t\t\t.length = sizeof(bool),\n\t\t};\n\n\t\tif (!conn->panel_dead) {\n\t\t\tconn->panel_dead = true;\n\t\t\tmsm_mode_object_event_notify(&conn->base.base,\n\t\t\t\tconn->base.dev, &event, (u8 *)&conn->panel_dead);\n\t\t}\n\t}\n\n\tif (sde_enc->disp_info.intf_type == DRM_MODE_CONNECTOR_DSI &&\n"],["\tdrm_set_preferred_mode(conn, drm_mode->hdisplay, drm_mode->vdisplay);\n","\t/* Keep an explicit 75 Hz DSI preference instead of marking all modes\n\t * with the same resolution preferred during continuous splash.\n\t */\n\tif (sde_enc->disp_info.intf_type == DRM_MODE_CONNECTOR_DSI &&\n\t    sde_enc->disp_info.is_primary) {\n\t\tstruct drm_display_mode *candidate;\n\t\tbool has_preferred_75 = false;\n\n\t\tlist_for_each_entry(candidate, &conn->probed_modes, head) {\n\t\t\tif (candidate->vrefresh == 75 &&\n\t\t\t    (candidate->type & DRM_MODE_TYPE_PREFERRED)) {\n\t\t\t\thas_preferred_75 = true;\n\t\t\t\tbreak;\n\t\t\t}\n\t\t}\n\t\tif (!has_preferred_75)\n\t\t\tdrm_set_preferred_mode(conn, drm_mode->hdisplay,\n\t\t\t\t\tdrm_mode->vdisplay);\n\t} else {\n\t\tdrm_set_preferred_mode(conn, drm_mode->hdisplay, drm_mode->vdisplay);\n\t}\n"]]}''')
 marker = '/* Bool-X 75/90 Hz modes; Copyright (C) 2021 XiaoMi, Inc.; GPL-2.0. */'
+evo_marker = '/* Evolution-X 72/81/90 Hz modes, commit 2c772d3fd9a042835a1f8489b91aa97b90be5b7f. */'
+evo_legacy_marker = '/* Evolution-X 81/90 Hz modes, commit 2c772d3fd9a042835a1f8489b91aa97b90be5b7f. */'
+evo_panels = {
+    'dsi-panel-ss-fhd-ea8076-cmd.dtsi': ('dsi_ss_fhd_ea8076_cmd', '545901f796377160d8a650db47d0afdbd1615d25ccc932345888c148575025e3'),
+    'dsi-panel-ss-fhd-ea8076-global-cmd.dtsi': ('dsi_ss_fhd_ea8076_global_cmd', '64cf89985b4cc7eed0799c1ee691290006c0acfb54fcaa5f89dc27e696eb85b3'),
+}
 mode_hashes = {
     1: 'a393251def29ea7aaefb1343bf60d5b851f8bd92ea58258a86e74010dc8a9077',
     3: '406e95d47e638eb55bd092148fe1a5570ab143c0454d34f95cac4c7105ad8a63',
@@ -587,6 +486,45 @@ def node(text, pattern):
 def digest(text):
     return hashlib.sha256(text.encode()).hexdigest()
 
+def evo_mode(name, stock, index):
+    # Build from the local 60 Hz node so this ROM's command sets and optional
+    # FOD/AOD features are preserved. Only Evolution-X timing values change.
+    command = re.search(r'qcom,mdss-dsi-on-command\s*=\s*\[(.*?)\]', stock, re.S)
+    if not command:
+        fail(f'{name}: missing stock panel-on commands')
+    command_text = re.sub(r'/\*.*?\*/|//[^\n]*', '', command.group(1), flags=re.S)
+    try:
+        command_hash = hashlib.sha256(bytes.fromhex(command_text)).hexdigest()
+    except ValueError:
+        fail(f'{name}: invalid stock panel-on commands')
+    if command_hash != evo_panels[name][1]:
+        fail(f'{name}: stock panel-on commands do not match the reviewed source')
+    rate, clock, transfer = {1: (72, 1320000000, 11486), 2: (81, 1485000000, 10210), 3: (90, 1650000000, 9189)}[index]
+    values = {'h-front-porch': 22, 'h-back-porch': 16, 'h-pulse-width': 16,
+              'v-back-porch': 16 if index == 2 and 'global' in name else 22,
+              'v-front-porch': 16, 'v-pulse-width': 12 if index == 2 and 'global' in name else 16,
+              'panel-framerate': rate, 'panel-clockrate': clock}
+    result, count = re.subn(r'timing@0(?=\s*\{)', f'timing@{index}', stock, count=1)
+    if count != 1:
+        fail(f'{name}: cannot locate the stock timing node')
+    for key, value in values.items():
+        pattern = rf'(qcom,mdss-dsi-{key}\s*=\s*<)\d+(>;)'
+        result, count = re.subn(pattern, lambda m: m[1] + str(value) + m[2], result)
+        if count != 1:
+            fail(f'{name}: expected one {key} setting')
+    if 'qcom,mdss-mdp-transfer-time-us' in result or 'qcom,mdss-dsi-transfer-time-pclk' in result:
+        fail(f'{name}: stock timing has unexpected transfer overrides')
+    opening = result.index('{') + 1
+    return (result[:opening] + f'\n\t\t\t\tqcom,mdss-mdp-transfer-time-us = <{transfer}>;'
+            + '\n\t\t\t\tqcom,mdss-dsi-transfer-time-pclk;' + result[opening:])
+
+def evo_phy(index):
+    return (f'\t\ttiming@{index}{{\n'
+            '\t\t\tqcom,mdss-dsi-panel-phy-timings = [00 24 0A 0A 26 24 0A\n'
+            '\t\t\t\t0A 06 02 04 00 1E 1A];\n'
+            '\t\t\tqcom,display-topology = <1 0 1>;\n'
+            '\t\t\tqcom,default-topology-index = <0>;\n\t\t};\n')
+
 # Stage every change before writing; custom changes to previously installed
 # mode nodes abort instead of being silently removed.
 changes = {}
@@ -597,8 +535,31 @@ for name, label in panels.items():
     path = root / base / name
     original = path.read_text()
     updated = original
+    evo_installed = evo_marker in original or evo_legacy_marker in original
+    existing_evo_marker = evo_marker if evo_marker in original else evo_legacy_marker
+    evo_indices = (1, 2, 3) if existing_evo_marker == evo_marker else (2, 3)
+    if evo_installed:
+        if name not in evo_panels or original.count(existing_evo_marker) != 1 or (evo_marker in original and evo_legacy_marker in original):
+            fail(f'{name}: unexpected Evolution-X mode marker')
+        ids = re.findall(r'^\t{3}timing@(\d+)\s*\{', updated, re.M)
+        if ids != ['0'] + [str(i) for i in evo_indices]:
+            fail(f'{name}: unexpected Evolution-X timing nodes')
+        stock = node(updated, r'^\t{3}timing@0\s*\{')[2]
+        for index in evo_indices:
+            left, right, content = node(updated, rf'^\t{{3}}timing@{index}\s*\{{')
+            if content != evo_mode(name, stock, index):
+                fail(f'{name}: Evolution-X timing@{index} has local modifications')
+            updated = updated[:left] + updated[right:]
+        line = '\t\t\t' + existing_evo_marker + '\n'
+        if updated.count(line) != 1:
+            fail(f'{name}: unexpected Evolution-X marker layout')
+        updated = updated.replace(line, '', 1)
+        preferred = '\t\tqcom,mdss-dsi-preferred-refresh-rate = <60>;\n'
+        if updated.count(preferred) != 1:
+            fail(f'{name}: unexpected Evolution-X preferred-rate setting')
+        updated = updated.replace(preferred, '', 1)
     installed = marker in original
-    mode_ids = re.findall(r'^\t{3}timing@(\d+)\s*\{', original, re.M)
+    mode_ids = re.findall(r'^\t{3}timing@(\d+)\s*\{', updated, re.M)
     if installed:
         if original.count(marker) != 1:
             fail(f'{name}: multiple installed high-refresh markers')
@@ -623,6 +584,15 @@ for name, label in panels.items():
     changes[path] = (original, updated)
 
     start, end, parent = node(central, rf'^&{label}\s*\{{')
+    if evo_installed:
+        ids = re.findall(r'^\t{2}timing@(\d+)\s*\{', parent, re.M)
+        if ids != ['0'] + [str(i) for i in evo_indices]:
+            fail(f'{label}: unexpected Evolution-X PHY timing nodes')
+        for index in evo_indices:
+            left, right, content = node(parent, rf'^\t{{2}}timing@{index}\s*\{{')
+            if content != evo_phy(index):
+                fail(f'{label}: Evolution-X PHY timing@{index} has local modifications')
+            parent = parent[:left] + parent[right:]
     parent_ids = re.findall(r'^\t{2}timing@(\d+)\s*\{', parent, re.M)
     if any(index not in ('0', '1', '3') for index in parent_ids):
         fail(f'{label}: unrecognized PHY timing nodes; preserve local changes and resolve manually')
@@ -689,14 +659,63 @@ for name, replacements in driver_edits.items():
             fail(f'{name}: unexpected mode-lookup error handling')
     changes[path] = (original, updated)
 
+# Reapply only the Evolution-X modes reviewed for the two SS panel variants.
+# Six other ROM variants are deliberately left at their stock timings.
+central_original, central = changes[central_path]
+for name, (label, _) in evo_panels.items():
+    path = root / base / name
+    original, updated = changes[path]
+    if 'qcom,mdss-dsi-panel-type = "dsi_cmd_mode";' not in updated or 'qcom,mdss-dsi-bpp = <24>;' not in updated:
+        fail(f'{name}: expected a 24-bit command-mode panel')
+    if any(f'qcom,mdss-dsi-lane-{i}-state;' not in updated for i in range(4)):
+        fail(f'{name}: expected four DSI lanes')
+    panel_type = '\t\tqcom,mdss-dsi-panel-type = "dsi_cmd_mode";\n'
+    if updated.count(panel_type) != 1 or 'qcom,mdss-dsi-preferred-refresh-rate' in updated:
+        fail(f'{name}: unexpected existing preferred refresh rate')
+    updated = updated.replace(panel_type, panel_type + '\t\tqcom,mdss-dsi-preferred-refresh-rate = <60>;\n', 1)
+    stock = node(updated, r'^\t{3}timing@0\s*\{')[2]
+    suffix = '\t\t};\n\t};\n};\n'
+    if updated.count(suffix) != 1:
+        fail(f'{name}: cannot safely locate the timing list')
+    addition = '\t\t\t' + evo_marker + '\n' + ''.join(evo_mode(name, stock, i) for i in (1, 2, 3))
+    updated = updated.replace(suffix, addition + suffix, 1)
+    changes[path] = (original, updated)
+    start, end, parent = node(central, rf'^&{label}\s*\{{')
+    suffix = '\t};\n};\n'
+    if parent.count(suffix) != 1:
+        fail(f'{label}: cannot safely locate the PHY timing list')
+    parent = parent.replace(suffix, ''.join(evo_phy(i) for i in (1, 2, 3)) + suffix, 1)
+    central = central[:start] + parent + central[end:]
+changes[central_path] = (central_original, central)
+
+# Gate DMS on panel support, calculate transfer clocks without integer-Hz
+# truncation, and retain an already-preferred 60 Hz splash mode.
+for name, rule_index, new_override in (
+    ('drivers/gpu/drm/msm/dsi-staging/dsi_panel.c', 0, None),
+    ('drivers/gpu/drm/msm/dsi-staging/dsi_drm.c', 0, None),
+    ('drivers/gpu/drm/msm/sde/sde_encoder.c', 2, general),
+):
+    path = root / name
+    original, updated = changes[path]
+    old, new = driver_edits[name][rule_index]
+    if new_override is not None:
+        new = new_override
+    if new not in updated:
+        if updated.count(old) != 1:
+            fail(f'{name}: cannot apply reviewed Evolution-X driver compatibility edit')
+        updated = updated.replace(old, new, 1)
+    changes[path] = (original, updated)
+
 for path, (original, updated) in changes.items():
     if original != updated:
         path.write_text(updated)
 output.mkdir(parents=True, exist_ok=True)
 report = output / 'display-modes.txt'
-report.write_text('Raphael display setup: stock panel timings; high-refresh port removed.\n'
+report.write_text('Evolution-X commit 2c772d3fd9a042835a1f8489b91aa97b90be5b7f: '
+                  '60, 72, 81 and 90 Hz for the two SS EA8076 panels; 60 Hz preferred.\n'
+                  'Experimental: full modesets and physical display behavior require testing.\n'
                   'Rebuild the kernel and device tree before packaging.\n')
-print('Raphael display: removed the 75/90 Hz port; stock panel timings restored.')
+print('Raphael display: 60/72/81/90 Hz prepared for SS EA8076 panels; 60 Hz preferred.')
 print(f'Display source report: {report}')
 PYDISPLAY
 }
@@ -1306,6 +1325,6 @@ else
     if [[ -e $OUT_DIR/dtbo.img ]]; then
         printf 'Warning: existing %s/dtbo.img was not regenerated and may contain old display changes.\n' "$OUT_DIR"
     fi
-    printf 'To package your verified original DTBO, set STOCK_DTBO_IMG and run ./build.sh --dtbo-only.\n'
-    printf 'Other templates must contain a uniquely identified compatible Raphael overlay.\n'
+    printf 'To create the reviewed ROM-specific DTBO, set STOCK_DTBO_IMG and run ./build.sh --dtbo-only.\n'
+    printf 'Other ROM images require a separately reviewed display port.\n'
 fi
