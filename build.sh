@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # All-in-one Raphael branch 17 build: Boolx Clang 22, NetHunter, 88x2bu,
-# KernelSU-Next legacy, experimental Evolution-X display modes, boot/DTBO packaging.
+# KernelSU-Next legacy, MIUICX display modes, boot/DTBO packaging.
 set -Eeuo pipefail
 
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
@@ -14,7 +14,7 @@ KernelSU-Next and NetHunter are disabled unless their flags are supplied.
 Options:
   --ksu          Download/integrate KernelSU-Next legacy with manual hooks
   --nethunter    Enable the NetHunter kernel configuration profile
-  --high-refresh Enable experimental 72/81/90 Hz display modes
+  --high-refresh Enable MIUICX R6.1 69/75/81/90 Hz SS panel modes
   --bootimg-only Package an existing compiled kernel using STOCK_BOOT_IMG
   --dtbo-only    Create a DTBO image using STOCK_DTBO_IMG
   --wifi-diagnose Collect adapter diagnostics through adb
@@ -44,6 +44,36 @@ Examples:
   STOCK_BOOT_IMG=/path/to/working/boot.img ./build.sh
   STOCK_BOOT_IMG=/path/to/working/boot.img ./build.sh --bootimg-only
   STOCK_DTBO_IMG=/path/to/original/dtbo.img ./build.sh --dtbo-only
+
+Missing toolchains are downloaded from the Boolx-22 GitHub release.
+The pinned 88x2bu driver is downloaded and enabled for Archer T3U Plus (2357:0138).
+With --ksu, official KernelSU-Next legacy is pinned for this 4.14 kernel.
+All source/configuration fixes and boot.img packaging are embedded in this file;
+copy only build.sh into the root of a complete branch 17 checkout to use it.
+With --nethunter, enable chroot IPC, USB gadgets/serial, USB Bluetooth, mac80211,
+and packet filtering. The Kali rootfs and Android apps are installed separately.
+Enabled NetHunter settings are recorded in out/nethunter-config.txt.
+Repeat the desired flags on every build; changing flags restores pre-feature
+settings and preserves unrelated configuration edits. Old configurations are
+backed up when migrating from the previous always-enabled script.
+Display mode defaults to stock 60 Hz. --high-refresh enables experimental
+MIUICX R6.1 69/75/81/90 Hz for two SS EA8076 panels; 60 Hz remains preferred.
+The panel overclock requires physical testing on this ROM and screen.
+Requires a Linux x86_64 host.
+Debian/Ubuntu host dependencies:
+  build-essential bc bison flex libssl-dev libelf-dev zlib1g-dev
+  python3 perl pkg-config cpio gzip lz4 curl tar zstd device-tree-compiler
+
+Outputs: out/arch/arm64/boot/Image, Image.gz, device trees under boot/dts/,
+         out/vmlinux, out/System.map, and modules when enabled.
+Set STOCK_BOOT_IMG, or place stock_boot.img beside this script, to create out/boot.img.
+Use a template from the same Raphael ROM. Its ramdisk and device trees are
+preserved. magiskboot is downloaded automatically; MAGISKBOOT can override it.
+ROM-specific image signing is separate.
+DTBO packaging accepts the reviewed original LineageOS 17 Raphael image only.
+Without --high-refresh it copies the original byte for byte. With the option it
+creates a fixed experimental image. Preserve the original for recovery.
+Parent AVB acceptance and panel behavior require device testing.
 EOF
 }
 
@@ -179,7 +209,7 @@ fi
 pack_dtbo_image() (
     command -v python3 >/dev/null 2>&1 || die 'python3 is required.'
     if (( WITH_HIGH_REFRESH )); then
-        command -v zstd >/dev/null 2>&1 || die 'zstd is required to create the experimental Evolution-X DTBO.'
+        command -v zstd >/dev/null 2>&1 || die 'zstd is required to create the MIUICX DTBO.'
     fi
     [[ -n ${STOCK_DTBO_IMG:-} ]] || die 'Set STOCK_DTBO_IMG to the original ROM DTBO image.'
     python3 - "$STOCK_DTBO_IMG" "$OUT_DIR/dtbo.img" "$WITH_HIGH_REFRESH" <<'PYEVDTBO'
@@ -189,7 +219,7 @@ import hashlib, os, pathlib, shutil, sys, tempfile
 source, output = map(pathlib.Path, sys.argv[1:3])
 high_refresh = sys.argv[3] == '1'
 original_hash = '2a7fedf9e370b421227879ae1ca035b30028bbdbf7f7265b553770d3c60a9674'
-result_hash = 'ece39051f2fa608e8ead9ec4770398d2448af5a443a39049c9cfc544104bf5e5'
+result_hash = '8b5203867bc40fb399c76ea366f03eb6bdb8876f2716d1dff91eefc7dec38729'
 def sha256(path):
     h = hashlib.sha256()
     with path.open('rb') as stream:
@@ -211,59 +241,63 @@ if not high_refresh:
     print('The stock image keeps its original AVB footer and display settings.')
     sys.exit(0)
 import base64, lzma, subprocess
-# Fixed, reviewed delta for the original 32 MiB DTBO (entry 11).
+# Fixed MIUICX R6.1 SS panel delta for the original 32 MiB DTBO (entry 11).
 encoded = b"""
-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
+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
+6doAAfoXuyQAAJeCq1CxxGf7AgAAAAAEWVo=
 """
 with tempfile.TemporaryDirectory(prefix='.evo-dtbo-', dir=output.parent) as work:
     patch = pathlib.Path(work) / 'patch.zst'
@@ -276,8 +310,8 @@ with tempfile.TemporaryDirectory(prefix='.evo-dtbo-', dir=output.parent) as work
     if sha256(result) != result_hash:
         sys.exit('Error: reconstructed DTBO failed its SHA-256 check.')
     os.replace(result, output)
-print(f'Experimental Evolution-X DTBO created: {output}')
-print('This is a fixed ROM-specific 60/72/81/90 Hz image, not the current compiled overlay.')
+print(f'Experimental MIUICX R6.1 DTBO created: {output}')
+print('This is a fixed ROM-specific 60/69/75/81/90 Hz image, not the current compiled overlay.')
 print('Keep the original; parent AVB acceptance and panel behavior require device testing.')
 PYEVDTBO
 )
@@ -444,6 +478,21 @@ evo_panels = {
     'dsi-panel-ss-fhd-ea8076-cmd.dtsi': ('dsi_ss_fhd_ea8076_cmd', '545901f796377160d8a650db47d0afdbd1615d25ccc932345888c148575025e3'),
     'dsi-panel-ss-fhd-ea8076-global-cmd.dtsi': ('dsi_ss_fhd_ea8076_global_cmd', '64cf89985b4cc7eed0799c1ee691290006c0acfb54fcaa5f89dc27e696eb85b3'),
 }
+miuicx_marker = '/* MIUICX R6.1 SS panel modes: 69/75/81/90 Hz. */'
+miuicx_rates = {1: (69, 1150000000), 2: (75, 1250000000),
+                3: (81, 1350000000), 4: (90, 1500000000)}
+miuicx_switch = {
+    'dsi-panel-ss-fhd-ea8076-cmd.dtsi':
+        '39 00 00 00 00 00 03 F0 5A 5A 39 00 00 00 00 00 03 FC 5A 5A '
+        '39 00 00 00 00 00 02 B0 23 39 00 00 00 00 00 02 D1 0F '
+        '39 00 00 00 00 00 0C E9 11 55 A6 75 A3 A9 A1 4A 00 8A 18 '
+        '39 00 00 00 00 00 03 F0 A5 A5 39 01 00 00 00 00 03 FC A5 A5',
+    'dsi-panel-ss-fhd-ea8076-global-cmd.dtsi':
+        '39 00 00 00 00 00 03 F0 5A 5A 39 00 00 00 00 00 03 FC 5A 5A '
+        '39 00 00 00 00 00 02 B0 23 39 00 00 00 00 00 02 D1 11 '
+        '39 00 00 00 00 00 0C E9 11 55 A6 75 A3 A9 A1 4A 00 8A 18 '
+        '39 00 00 00 00 00 03 F0 A5 A5 39 01 00 00 00 00 03 FC A5 A5',
+}
 mode_hashes = {
     1: 'a393251def29ea7aaefb1343bf60d5b851f8bd92ea58258a86e74010dc8a9077',
     3: '406e95d47e638eb55bd092148fe1a5570ab143c0454d34f95cac4c7105ad8a63',
@@ -520,6 +569,51 @@ def evo_phy(index):
             '\t\t\tqcom,display-topology = <1 0 1>;\n'
             '\t\t\tqcom,default-topology-index = <0>;\n\t\t};\n')
 
+def miuicx_mode(name, stock, index):
+    rate, clock = miuicx_rates[index]
+    command = re.search(r'qcom,mdss-dsi-on-command\s*=\s*\[(.*?)\]', stock, re.S)
+    if not command:
+        fail(f'{name}: missing stock panel-on commands')
+    command_text = re.sub(r'/\*.*?\*/|//[^\n]*', '', command[1], flags=re.S)
+    try:
+        command_bytes = bytes.fromhex(command_text)
+    except ValueError:
+        fail(f'{name}: invalid stock panel-on commands')
+    if hashlib.sha256(command_bytes).hexdigest() != evo_panels[name][1]:
+        fail(f'{name}: stock panel commands do not match the reviewed MIUICX panel')
+    result, count = re.subn(r'timing@0(?=\s*\{)', f'timing@{index}', stock, count=1)
+    if count != 1:
+        fail(f'{name}: cannot locate stock timing')
+    values = {'h-front-porch': 22, 'h-back-porch': 16, 'h-pulse-width': 16,
+              'v-front-porch': 16, 'v-back-porch': 22, 'v-pulse-width': 16,
+              'panel-framerate': rate, 'panel-clockrate': clock}
+    for key, value in values.items():
+        pattern = rf'(qcom,mdss-dsi-{key}\s*=\s*<)\d+(>;)'
+        result, count = re.subn(pattern, lambda m: m[1] + str(value) + m[2], result)
+        if count != 1:
+            fail(f'{name}: expected one {key} setting')
+    command = re.search(r'(qcom,mdss-dsi-on-command\s*=\s*\[)(.*?)(\];)', result, re.S)
+    old = 'E9 11 55 A6 75 A3 B9 A1 4A 00 1A B8'
+    new = 'E9 11 55 A6 75 A3 A9 A1 4A 00 1A B8'
+    if not command or command[2].count(old) != 1:
+        fail(f'{name}: cannot safely install MIUICX high-mode panel command')
+    result = result[:command.start(2)] + command[2].replace(old, new, 1) + result[command.end(2):]
+    if len(bytes.fromhex(miuicx_switch[name])) != 77 or 'qcom,mdss-dsi-timing-switch-command' in result:
+        fail(f'{name}: unexpected timing-switch command layout')
+    end = result.rfind('\t\t\t};')
+    if end < 0:
+        fail(f'{name}: cannot locate timing node end')
+    addition = ('\t\t\t\tqcom,mdss-dsi-timing-switch-command = ['
+                + miuicx_switch[name] + '];\n'
+                '\t\t\t\tqcom,mdss-dsi-timing-switch-command-state = "dsi_lp_mode";\n')
+    return result[:end] + addition + result[end:]
+
+def miuicx_phy(stock, index):
+    result, count = re.subn(r'timing@0(?=\s*\{)', f'timing@{index}', stock, count=1)
+    if count != 1:
+        fail('cannot clone stock SS PHY timing')
+    return result
+
 # Stage every change before writing; custom changes to previously installed
 # mode nodes abort instead of being silently removed.
 changes = {}
@@ -530,6 +624,24 @@ for name, label in panels.items():
     path = root / base / name
     original = path.read_text()
     updated = original
+    miuicx_installed = miuicx_marker in original
+    if miuicx_installed:
+        if name not in evo_panels or original.count(miuicx_marker) != 1:
+            fail(f'{name}: unexpected MIUICX mode marker')
+        ids = re.findall(r'^\t{3}timing@(\d+)\s*\{', updated, re.M)
+        if ids != ['0', '1', '2', '3', '4']:
+            fail(f'{name}: unexpected MIUICX timing nodes')
+        stock = node(updated, r'^\t{3}timing@0\s*\{')[2]
+        for index in miuicx_rates:
+            left, right, content = node(updated, rf'^\t{{3}}timing@{index}\s*\{{')
+            if content != miuicx_mode(name, stock, index):
+                fail(f'{name}: MIUICX timing@{index} has local modifications')
+            updated = updated[:left] + updated[right:]
+        marker_line = '\t\t\t' + miuicx_marker + '\n'
+        preferred = '\t\tqcom,mdss-dsi-preferred-refresh-rate = <60>;\n'
+        if updated.count(marker_line) != 1 or updated.count(preferred) != 1:
+            fail(f'{name}: unexpected MIUICX marker or preference')
+        updated = updated.replace(marker_line, '', 1).replace(preferred, '', 1)
     evo_installed = evo_marker in original or evo_legacy_marker in original
     existing_evo_marker = evo_marker if evo_marker in original else evo_legacy_marker
     evo_indices = (1, 2, 3) if existing_evo_marker == evo_marker else (2, 3)
@@ -579,6 +691,16 @@ for name, label in panels.items():
     changes[path] = (original, updated)
 
     start, end, parent = node(central, rf'^&{label}\s*\{{')
+    if miuicx_installed:
+        ids = re.findall(r'^\t{2}timing@(\d+)\s*\{', parent, re.M)
+        if ids != ['0', '1', '2', '3', '4']:
+            fail(f'{label}: unexpected MIUICX PHY timing nodes')
+        stock_phy = node(parent, r'^\t{2}timing@0\s*\{')[2]
+        for index in miuicx_rates:
+            left, right, content = node(parent, rf'^\t{{2}}timing@{index}\s*\{{')
+            if content != miuicx_phy(stock_phy, index):
+                fail(f'{label}: MIUICX PHY timing@{index} has local modifications')
+            parent = parent[:left] + parent[right:]
     if evo_installed:
         ids = re.findall(r'^\t{2}timing@(\d+)\s*\{', parent, re.M)
         if ids != ['0'] + [str(i) for i in evo_indices]:
@@ -620,8 +742,9 @@ if general == legacy or 'candidate->vrefresh == 75' in general:
 
 for name, replacements in driver_edits.items():
     path = root / name
-    is_binding_doc = name == 'Documentation/devicetree/bindings/drm/msm/mdss-dsi-panel.txt'
-    if is_binding_doc and not path.is_file():
+    # The MIUICX port does not edit this binding. Some branch 17 trees use a
+    # different copy, so leave their documentation untouched.
+    if name == 'Documentation/devicetree/bindings/drm/msm/mdss-dsi-panel.txt':
         continue
     original = path.read_text()
     updated = original
@@ -637,10 +760,6 @@ for name, replacements in driver_edits.items():
         elif updated.count(new) > 1:
             fail(f'{name}: multiple copies of a high-refresh edit')
         elif old not in updated:
-            if is_binding_doc:
-                print(f'Display documentation differs; leaving it unchanged: {name}')
-                updated = original
-                break
             fail(f'{name}: cannot safely reverse high-refresh edit; preserve local changes and resolve manually')
     # Keep the independent bool-return correctness fix for failed mode lookups.
     if name == 'drivers/gpu/drm/msm/dsi-staging/dsi_drm.c':
@@ -654,7 +773,7 @@ for name, replacements in driver_edits.items():
             fail(f'{name}: unexpected mode-lookup error handling')
     changes[path] = (original, updated)
 
-# Reapply only the Evolution-X modes reviewed for the two SS panel variants.
+# Apply the MIUICX R6.1 SS panel modes while retaining the ROM's 60 Hz node.
 # Six other ROM variants are deliberately left at their stock timings.
 central_original, central = changes[central_path]
 for name, (label, _) in (evo_panels.items() if high_refresh else ()):
@@ -672,21 +791,20 @@ for name, (label, _) in (evo_panels.items() if high_refresh else ()):
     suffix = '\t\t};\n\t};\n};\n'
     if updated.count(suffix) != 1:
         fail(f'{name}: cannot safely locate the timing list')
-    addition = '\t\t\t' + evo_marker + '\n' + ''.join(evo_mode(name, stock, i) for i in (1, 2, 3))
+    addition = '\t\t\t' + miuicx_marker + '\n' + ''.join(miuicx_mode(name, stock, i) for i in miuicx_rates)
     updated = updated.replace(suffix, addition + suffix, 1)
     changes[path] = (original, updated)
     start, end, parent = node(central, rf'^&{label}\s*\{{')
     suffix = '\t};\n};\n'
     if parent.count(suffix) != 1:
         fail(f'{label}: cannot safely locate the PHY timing list')
-    parent = parent.replace(suffix, ''.join(evo_phy(i) for i in (1, 2, 3)) + suffix, 1)
+    stock_phy = node(parent, r'^\t{2}timing@0\s*\{')[2]
+    parent = parent.replace(suffix, ''.join(miuicx_phy(stock_phy, i) for i in miuicx_rates) + suffix, 1)
     central = central[:start] + parent + central[end:]
 changes[central_path] = (central_original, central)
 
-# Gate DMS on panel support, calculate transfer clocks without integer-Hz
-# truncation, and retain an already-preferred 60 Hz splash mode.
+# Gate DMS on panel support and retain the preferred 60 Hz splash mode.
 for name, rule_index, new_override in ((
-    ('drivers/gpu/drm/msm/dsi-staging/dsi_panel.c', 0, None),
     ('drivers/gpu/drm/msm/dsi-staging/dsi_drm.c', 0, None),
     ('drivers/gpu/drm/msm/sde/sde_encoder.c', 2, general),
 ) if high_refresh else ()):
@@ -697,9 +815,81 @@ for name, rule_index, new_override in ((
         new = new_override
     if new not in updated:
         if updated.count(old) != 1:
-            fail(f'{name}: cannot apply reviewed Evolution-X driver compatibility edit')
+            fail(f'{name}: cannot apply reviewed MIUICX driver compatibility edit')
         updated = updated.replace(old, new, 1)
     changes[path] = (original, updated)
+
+# libfdt prepends newly overlaid timing nodes. On the reviewed ROM's DTBO this
+# exposes 90 Hz before the original 60 Hz timing even though timing@0 is 60 Hz.
+# Keep kernel mode index zero and the DRM preferred mode at the stock 60 Hz.
+display_path = root / 'drivers/gpu/drm/msm/dsi-staging/dsi_display.c'
+display_original = display_path.read_text()
+display_updated = display_original
+mode_order_old = ('\t\t_dsi_display_populate_bit_clks(display, start, end, &array_idx);\n'
+                  '\t}\n\nexit:\n\t*out_modes = display->modes;\n')
+mode_order_new = '''\t\t_dsi_display_populate_bit_clks(display, start, end, &array_idx);
+\t}
+
+\t/* The MIUICX Raphael DTBO overlay prepends timing@4 through @1.
+\t * Sort only its exact 60/69/75/81/90 Hz mode set, so index zero remains
+\t * the stock 60 Hz mode regardless of the overlay implementation.
+\t */
+\t{
+\t\tconst u32 rates[] = { 60, 69, 75, 81, 90 };
+\t\tstruct dsi_display_mode temp;
+\t\tu32 preferred_rate;
+\t\tu32 j;
+
+\t\tif (!display->panel->utils.read_u32(display->panel->utils.data,
+\t\t\t\t"qcom,mdss-dsi-preferred-refresh-rate",
+\t\t\t\t&preferred_rate) && preferred_rate == 60) {
+\t\t\tif (array_idx != ARRAY_SIZE(rates)) {
+\t\t\t\trc = -EINVAL;
+\t\t\t\tgoto error;
+\t\t\t}
+\t\t\tfor (i = 0; i < (int)ARRAY_SIZE(rates); i++) {
+\t\t\t\tfor (j = i; j < ARRAY_SIZE(rates); j++)
+\t\t\t\t\tif (display->modes[j].timing.refresh_rate ==
+\t\t\t\t\t\t\trates[i])
+\t\t\t\t\t\tbreak;
+\t\t\t\tif (j == ARRAY_SIZE(rates)) {
+\t\t\t\t\trc = -EINVAL;
+\t\t\t\t\tgoto error;
+\t\t\t\t}
+\t\t\t\ttemp = display->modes[i];
+\t\t\t\tdisplay->modes[i] = display->modes[j];
+\t\t\t\tdisplay->modes[j] = temp;
+\t\t\t}
+\t\t}
+\t}
+
+exit:
+\t*out_modes = display->modes;
+'''
+mode_order_legacy = (mode_order_new
+    .replace('The MIUICX Raphael DTBO overlay prepends timing@4 through @1.',
+             'The reviewed Raphael DTBO overlay prepends timing@3, @2 and @1.')
+    .replace('60/69/75/81/90 Hz mode set', '60/72/81/90 Hz mode set')
+    .replace('{ 60, 69, 75, 81, 90 }', '{ 60, 72, 81, 90 }'))
+for installed_order in (mode_order_new, mode_order_legacy):
+    if display_updated.count(installed_order) == 1:
+        display_updated = display_updated.replace(installed_order, mode_order_old, 1)
+    elif display_updated.count(installed_order) > 1:
+        fail('multiple installed display mode order blocks')
+if display_updated.count(mode_order_old) != 1:
+    fail('cannot safely locate display mode order code')
+if high_refresh:
+    if display_updated.count(mode_order_old) != 1:
+        fail('cannot safely install display mode ordering fix')
+    display_updated = display_updated.replace(mode_order_old, mode_order_new, 1)
+# An unsuccessful parse must not leave a freed mode cache for the next probe.
+cache_error_old = '\nerror:\n\tif (rc)\n\t\tkfree(display->modes);\n\n\tmutex_unlock(&display->display_lock);\n'
+cache_error_new = '\nerror:\n\tif (rc) {\n\t\tkfree(display->modes);\n\t\tdisplay->modes = NULL;\n\t}\n\n\tmutex_unlock(&display->display_lock);\n'
+if display_updated.count(cache_error_old) == 1:
+    display_updated = display_updated.replace(cache_error_old, cache_error_new, 1)
+elif display_updated.count(cache_error_new) != 1:
+    fail('cannot safely fix the display mode cache error path')
+changes[display_path] = (display_original, display_updated)
 
 for path, (original, updated) in changes.items():
     if original != updated:
@@ -707,11 +897,11 @@ for path, (original, updated) in changes.items():
 output.mkdir(parents=True, exist_ok=True)
 report = output / 'display-modes.txt'
 if high_refresh:
-    report.write_text('Evolution-X commit 2c772d3fd9a042835a1f8489b91aa97b90be5b7f: '
-                      '60, 72, 81 and 90 Hz for the two SS EA8076 panels; 60 Hz preferred.\n'
+    report.write_text('MIUICX R6.1 SS EA8076 port: '
+                      '60, 69, 75, 81 and 90 Hz; original 60 Hz preferred.\n'
                       'Experimental: full modesets and physical display behavior require testing.\n'
                       'Rebuild the kernel and device tree before packaging.\n')
-    print('Raphael display: 60/72/81/90 Hz prepared for SS EA8076 panels; 60 Hz preferred.')
+    print('Raphael display: MIUICX 60/69/75/81/90 Hz prepared for SS EA8076 panels.')
 else:
     report.write_text('Raphael display setup: stock panel timings; experimental high-refresh modes disabled.\n'
                       'Rebuild the kernel and device tree before packaging.\n')
@@ -1326,5 +1516,5 @@ else
         printf 'Warning: existing %s/dtbo.img was not regenerated and may contain old display changes.\n' "$OUT_DIR"
     fi
     printf 'To copy the original stock DTBO, set STOCK_DTBO_IMG and run ./build.sh --dtbo-only.\n'
-    printf 'The high-refresh option is experimental and caused a black screen on this phone.\n'
+    printf 'The MIUICX high-refresh port is experimental and has not been tested on this ROM.\n'
 fi
