@@ -219,7 +219,7 @@ import hashlib, os, pathlib, shutil, sys, tempfile
 source, output = map(pathlib.Path, sys.argv[1:3])
 high_refresh = sys.argv[3] == '1'
 original_hash = '2a7fedf9e370b421227879ae1ca035b30028bbdbf7f7265b553770d3c60a9674'
-result_hash = 'd44bb553ce0f078aa2605c6b12c5c4e3e8f70d774d7d93a5b0ff8d07d6fc0879'
+result_hash = 'ee78571812e57f3faa97bc2e14b8630ea284872e28c805204b82d585b7db7ad7'
 def sha256(path):
     h = hashlib.sha256()
     with path.open('rb') as stream:
@@ -243,61 +243,61 @@ if not high_refresh:
 import base64, lzma, subprocess
 # Fixed MIUICX R6.1 SS panel delta for the original 32 MiB DTBO (entry 11).
 encoded = b"""
-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
+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
-jYjZS4OeK/xcJI8opFqntdlWgjBEJT6H+OChpWkOEtCV/6ranlSA5+MBm8fAKI5DqS9AlsiOpi9L
-C54UCWvVWq93XxW4YFFe2W/+0mOckAKi1lBhC+HqSI5yQkf1YYHvb8WxmviKhceybi0sCYLHfnPY
-HmRKqdjEcwaoojZDJIfjxOJ6H5aoI4mdGy+4+je4RQUm+Y6kvjq6S57TZujwKR9LyJ2u/mrK/y4J
-Y92OJzBcouqvhm3UQfp5IMzlsi73youZLbmE7EXDBoU277oltwb+hFqcEwfmmk+LpIfG7UMZxdgl
-QbOjcSCFjxLoGZ0Tj6Kt7u0V2LXwm2pWN2qkg29ZyWnvnxWWOIJ+u+jHHSyV+j7bbf7RzNN2tr9n
-C5n+BshSi1GtZN4IlxYv97JI9NUuQ9zyK3E4XO5Un7sLldnmZ/toqM0NNt8yBRmtj/YPPXxlYELu
-DmuFlVFuQYQeVZOCklqmbUmZTyH8Lqhoz5TRil5hRdEjMKZXud+3PWLW3EjwN3blEIeVVMbsI7j3
-3krgXEHJW3f/fix51PIpXZKfTpcvq4YSsciVun9h4SPGXzKVDr7FLM5byyCmd6enjXhlBq2SIgGX
-S2DRnD1efyc4UpcK2DjrmYmvPadkLMozQtkiDl935qA0Xi4A/mvp3ligRC6EdRedpYPHRa9ywlfu
-L1ERjBeVwwqAnvsLyCfS7xPx/uHBMVDjp52B6GAU7I5LyPqc+/mMKG1OlT5FQYuF+B70+IY+1YdC
-f2PrxeCcUkO3sDu1fUJQfJHYVHaVUpTc3uDjQW4BqW3enWe9hHFwU+Lc5/DxQCzXaCZZ+8jFzW4Q
-BzwXZvOkrrfMyNrJApj6fydwSkMOpYeJQgCPsVtS3NOyJAcuJAZy1qQTtOA8wy2AYHKdMqsKVPzd
-yzJN+uoj2sOwWXlwQfM5TfghY1skxnujaRmNZZkMNfieFDn9WRA857i4D3W51jNrhGJP20B9+KC6
-uWS3nYcY0MyWykLr7Hg5Tbdt5zdn0CYGY8gi9KKUy55i4WU3taMoHu0i+dt2vl4r2prrVyUqVxd6
-O/BzZv2q7h5p9Ps6HxKHZ4eNuxH/JrZCc40tfKmxyPOatvuy9PtWl0w9EUMMMzPjIspooDYhpfbg
-icwYSfIwsN9UcDmNvz0kyZ3t/YMfJdi0CFJ1PogfQQfWW3d845tCkiV5tsNmiOo9a4qI3ZkZOPdf
-XUGFaY5YVSlpEm9MhFbGPURAo0xW7WCUVhsQ/5rx7u/30OSVvBEJRF+xGCc13gPTZJaYv6+3hdak
-dHqdY9qoLizBjVdP/joIJ6XP4C5sP0rTpvQgWXitSe738avL2Jk17XHksx9Gq2ScIT6DhXGmyKqH
-TuWgX5+qACfltPLg0ganatsKTDWelZ0zJQILggDqnw8HgPiq0/pMIR0ICpxIX0tZN8QiFdeKHCgk
-40N76IdJcjFbwMthb3ruXsjmtZct9PUiJEEJgOsKooIyDYeFGHxmCnun5w/m4TZ1itXSKGVjs6TG
-5NumrdQnmxcQ0T5EeCPOOm+8ebsvyDC8UablJ76t67SNnchmZarO7BsKFxcEA9EQUJbfxSu1C2XV
-8a5fQ1QUsuijSBTSfuYmj/fbWLMm3t3WK5/c9HswRnDAgcfzl9VgT7mA6y/ibnT6MyUQF6ST6mXF
-QJRi242NZ9/fmimzpv96wf8aHC49oygzJQVSQcAVm1HU7/SuqhVX/yDDVtwU0aXi1uMzU3cSP997
-wRLJ+94wG+bqfZpb2PTGD41vOkutqZRUJl9HE1WSWuUWOavAc8QDckec9PpetDPAc83JbX6w18uh
-n3HphQPDtqWmzjmYrwPsfonZirLzSXad+cSnw3sm+pLovLY5D0njJXFBqAJctz/TDJv3Cg8sq5j/
-iVOk3UR7yRUNX96NVM0tZhHm+0AmuPAavGf/iy89V9zbSZ8KTfD4qBfzjw+u8/uueDWhhvyNvj7h
-2XYjRMbHP/XApXJTQTpdJFzQKzS/WfnZ80E8yiK2I+ToXPQG7vmig8rw09xJRcWCgGIYmhXcoH9A
-FvHsI5Ka2/zaoHdc/spgNO//IYJfOIk6VvdksvXFrS82RecdXdOtB5rQGO4n/PKQ3bMmAV/Zmm9O
-200HBpwmepwxEnCSXjmV2/rJfL95iPSYjAZjC4QAxNl8iF9gcPbfRSQPzHZ5pG028mpRuGJLFSaa
-sy80qm9RULE90iJVvXGtZlHop/oawr75LD6n7ZxhNu8bn1uUcq38W1p6ZFU8C/g18k9PmtLMw276
-TEscI8FqP2bRKpDm8I9D+IP+Gey83wQqktBrjf6Ezlm6UanzruDRuwk2+VlCdeBshrePASEfD1lr
-1tmA/fhdJ42zU5KH02GdCnFQ7Qpof/NTGvdDMJA+wDY2HZM9qd8APsCi86Zl6xoDsg+A5RN6nuqS
-n6yl9SxurCaPK5bg62Vc+W0PFTJX5Z2+VCBuHouaFST6JeNmBQ+tgkzH2/ILFBNn863E4Kh/pSJ5
-x5CrObVamnb8Y+3jB25olAgEmwAswRxLGBzGl13vQy7cYucaNQVgQuiIQ3Mu5/0C0y8y0YR25Y0S
-Fuj1QJ7JtMP0de9GPtyGDVRCRBivGaX6SErDAedDswTYOqegDURZZcZFPugNNrET4GT6NwHSC1AW
-teItD7icdHhjAM93GslO7e9eZRrTQklQzQ/3SJLEMVcYT57KmcrNfFAMlB4fCaNf/Z/qhrBS0mRi
-3hfwnPanCrSxMj90MgbDm6Ww27jQ6IK6g2/cv3lbIPB3909GkZaztBJjEsAHRSy4xKyiX79qkHW/
-sjXOFybt5poQ8E0sOQH3AKe/3oMlcDnmexlB0skh69pbmo3BXSCCqeu8GnQiX9aTRQ/ry17Eggnz
-L8Q8mZHet4IXA8RjmC9Rr46UC6XJouTnGHVKM4jOw/g4kdu1yU/n5A57dLkdkaZG/YnNGuL0DLVG
-6/RvGOE4VLvvgoakehzrMZKcx5vg7/V6k8LXHz3xN7wPJCsV/xCYBemXRrppVib1A0eTgzQ18jz0
-dCZYljgx5hYld3288qYBPAxdAIawj+v8JyHNVyfZmESB6TM/pfUnP6zkLpZpO2jiDuwq4a6afk95
-/dW9YRn78lvyjFCUu9QDjw7oix/3GvN1O/2N+qOHqv/j56ceYSLCbyth+QA88mqiI15+y9/ZFC+x
-esqAirjXNqc1+7OkEDOTaFSf5umsSro25BsPwnOrhX9Xv9KJXN8PD0A8jFjmng2ZLPXcz1Pc8D/r
-izJGPR/0D4PU+Ccb6Bzy9lTXuzbKVSpcBX81qd2+xbE30W/dVqf0lL5B0+t58e6wO+jYFopjV7au
-0JLZ9kZRZJz0xWAERsdwWVJ27YRT14mpPYuDCbvD+xT30rVQHn3PV1MVmnto2P//lGHPoZmOSusx
-jl2ftwvUTZMzUVgSXvxr4V+EDEWDfETuPerE95nG8+1jCJVzPDFrzRnyJrQj77P4oON/H4IbBkAb
-rbILy7dRRGDCeXgHwyVtarzRAZ+EIKmfCnnEp28VC9Itv45qLOYNtBkGNXV/W9KIvZ3N4aFwaUDG
-kYHcrvLX1A+TAVml1SL4e6/KI2bnHTOMaWtjAmcnRpjSVDHp6XNkgNzH1NvaxA9X+BLxSPhheW09
-HnDaEOTRVVPOMm/xXlpQXnc8VRb4JgHxCtOSOX/tB3w3m9/Z6M+oHHGlYGrU91olM82JaniyweSC
-jbeSOvuMSxQWJjiB2zNL+H32Ar1tph7n8zFUHPJ29wxO0oDYCUSqfHcBMHkhRUcxoGfDva4meXW8
-KmsX9vjFqluzEZajTICDUji/UknwamlHdUwOtzYYDAUEY0ZdeirVG5g61EV0ep4qVcMAHqZqFWG5
-hfcAAfwXqyQAABU269axxGf7AgAAAAAEWVo=
+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
+D9MAAfkXriQAAJRX+LGxxGf7AgAAAAAEWVo=
 """
 with tempfile.TemporaryDirectory(prefix='.evo-dtbo-', dir=output.parent) as work:
     patch = pathlib.Path(work) / 'patch.zst'
@@ -640,7 +640,8 @@ for name, label in panels.items():
         if name not in evo_panels or original.count(installed_marker) != 1 or (miuicx_marker in original and miuicx_previous_marker in original):
             fail(f'{name}: unexpected MIUICX mode marker')
         ids = re.findall(r'^\t{3}timing@(\d+)\s*\{', updated, re.M)
-        if ids != ['0'] + [str(i) for i in installed_indices]:
+        if ids not in (['0'] + [str(i) for i in installed_indices],
+                       [str(i) for i in reversed(installed_indices)] + ['0']):
             fail(f'{name}: unexpected MIUICX timing nodes')
         stock = node(updated, r'^\t{3}timing@0\s*\{')[2]
         for index in installed_indices:
@@ -705,7 +706,8 @@ for name, label in panels.items():
     start, end, parent = node(central, rf'^&{label}\s*\{{')
     if miuicx_installed:
         ids = re.findall(r'^\t{2}timing@(\d+)\s*\{', parent, re.M)
-        if ids != ['0'] + [str(i) for i in installed_indices]:
+        if ids not in (['0'] + [str(i) for i in installed_indices],
+                       [str(i) for i in reversed(installed_indices)] + ['0']):
             fail(f'{label}: unexpected MIUICX PHY timing nodes')
         stock_phy = node(parent, r'^\t{2}timing@0\s*\{')[2]
         for index in installed_indices:
@@ -799,19 +801,18 @@ for name, (label, _) in (evo_panels.items() if high_refresh else ()):
     if updated.count(panel_type) != 1 or 'qcom,mdss-dsi-preferred-refresh-rate' in updated:
         fail(f'{name}: unexpected existing preferred refresh rate')
     updated = updated.replace(panel_type, panel_type + '\t\tqcom,mdss-dsi-preferred-refresh-rate = <60>;\n', 1)
-    stock = node(updated, r'^\t{3}timing@0\s*\{')[2]
-    suffix = '\t\t};\n\t};\n};\n'
-    if updated.count(suffix) != 1:
-        fail(f'{name}: cannot safely locate the timing list')
-    addition = '\t\t\t' + miuicx_marker + '\n' + ''.join(miuicx_mode(name, stock, i) for i in miuicx_enabled)
-    updated = updated.replace(suffix, addition + suffix, 1)
+    stock_start, stock_end, stock = node(updated, r'^\t{3}timing@0\s*\{')
+    # Overlay application prepends children, so emit high modes before the
+    # stock node in reverse order to make merged timing index zero 60 Hz.
+    addition = ('\t\t\t' + miuicx_marker + '\n'
+                + ''.join(miuicx_mode(name, stock, i) for i in reversed(miuicx_enabled)))
+    updated = updated[:stock_start] + addition + stock + updated[stock_end:]
     changes[path] = (original, updated)
     start, end, parent = node(central, rf'^&{label}\s*\{{')
-    suffix = '\t};\n};\n'
-    if parent.count(suffix) != 1:
-        fail(f'{label}: cannot safely locate the PHY timing list')
-    stock_phy = node(parent, r'^\t{2}timing@0\s*\{')[2]
-    parent = parent.replace(suffix, ''.join(miuicx_phy(stock_phy, i) for i in miuicx_enabled) + suffix, 1)
+    phy_start, phy_end, stock_phy = node(parent, r'^\t{2}timing@0\s*\{')
+    parent = (parent[:phy_start]
+              + ''.join(miuicx_phy(stock_phy, i) for i in reversed(miuicx_enabled))
+              + stock_phy + parent[phy_end:])
     central = central[:start] + parent + central[end:]
 changes[central_path] = (central_original, central)
 
@@ -831,9 +832,9 @@ for name, rule_index, new_override in ((
         updated = updated.replace(old, new, 1)
     changes[path] = (original, updated)
 
-# libfdt prepends newly overlaid timing nodes. On the reviewed ROM's DTBO this
-# exposes 75 Hz before the original 60 Hz timing even though timing@0 is 60 Hz.
-# Keep kernel mode index zero and the DRM preferred mode at the stock 60 Hz.
+# libfdt prepends newly overlaid timing nodes. The ROM DTBO emits the new
+# children in reverse order so the merged tree starts at the stock 60 Hz mode.
+# Keep the DRM preference at 60 Hz under other overlay implementations too.
 display_path = root / 'drivers/gpu/drm/msm/dsi-staging/dsi_display.c'
 display_original = display_path.read_text()
 display_updated = display_original
