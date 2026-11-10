@@ -45,38 +45,6 @@ Examples:
   STOCK_BOOT_IMG=/path/to/working/boot.img ./build.sh --bootimg-only
   STOCK_DTBO_IMG=/path/to/working/dtbo.img DTBO_INDEX=0 ./build.sh --dtbo-only
   STOCK_DTBO_IMG=/path/to/original/dtbo.img ./build.sh --dtbo-only
-
-Missing toolchains are downloaded from the Boolx-22 GitHub release.
-The pinned 88x2bu driver is downloaded and enabled for Archer T3U Plus (2357:0138).
-With --ksu, official KernelSU-Next legacy is pinned for this 4.14 kernel.
-All source/configuration fixes and boot.img packaging are embedded in this file;
-copy only build.sh into the root of a complete branch 17 checkout to use it.
-With --nethunter, enable chroot IPC, USB gadgets/serial, USB Bluetooth, mac80211,
-and packet filtering. The Kali rootfs and Android apps are installed separately.
-Enabled NetHunter settings are recorded in out/nethunter-config.txt.
-Repeat the desired flags on every build; changing flags restores pre-feature
-settings and preserves unrelated configuration edits. Old configurations are
-backed up when migrating from the previous always-enabled script.
-Display modes: stock 60 Hz plus experimental 75/90 Hz from Bool-X's pinned
-16-HyperMiui-erofs source. Stock 60 Hz is preferred. That source
-does not implement 120 Hz. Higher rates require device testing and a matching
-rebuilt DTBO; repacking boot.img alone preserves the stock display device tree.
-Requires a Linux x86_64 host.
-Debian/Ubuntu host dependencies:
-  build-essential bc bison flex libssl-dev libelf-dev zlib1g-dev
-  python3 perl pkg-config cpio gzip lz4 curl tar zstd device-tree-compiler
-
-Outputs: out/arch/arm64/boot/Image, Image.gz, device trees under boot/dts/,
-         out/vmlinux, out/System.map, and modules when enabled.
-Set STOCK_BOOT_IMG, or place stock_boot.img beside this script, to create out/boot.img.
-Use a template from the same Raphael ROM. Its ramdisk and device trees are
-preserved. magiskboot is downloaded automatically; MAGISKBOOT can override it.
-ROM-specific image signing is separate.
-DTBO packaging preserves the template's other entries and metadata. Select the
-Raphael entry indices appropriate for your ROM; images are never flashed here.
-The verified LineageOS 17 DTBO is recognized automatically; no index is needed.
-It produces a fixed experimental image for entry 11, not the current build's
-overlay. Keep the original; phone behavior and parent AVB acceptance are untested.
 EOF
 }
 
