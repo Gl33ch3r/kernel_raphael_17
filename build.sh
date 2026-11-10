@@ -30,7 +30,7 @@ Environment:
   DTC_EXT    External dtc executable (default: dtc from PATH)
   STOCK_BOOT_IMG  Working boot.img from the same ROM; enables boot.img packaging
   STOCK_DTBO_IMG  Working dtbo.img from the same ROM; enables DTBO packaging
-  DTBO_INDEX     Entry index to replace in that template (or comma-separated indices)
+  DTBO_INDEX     Verified entry index for other, unrecognized DTBO templates
 
 Examples:
   ./build.sh
@@ -43,6 +43,7 @@ Examples:
   ./build.sh Image.gz dtbs
   STOCK_BOOT_IMG=/path/to/working/boot.img ./build.sh
   STOCK_BOOT_IMG=/path/to/working/boot.img ./build.sh --bootimg-only
+  STOCK_DTBO_IMG=/path/to/working/dtbo.img DTBO_INDEX=0 ./build.sh --dtbo-only
   STOCK_DTBO_IMG=/path/to/original/dtbo.img ./build.sh --dtbo-only
 
 Missing toolchains are downloaded from the Boolx-22 GitHub release.
@@ -57,7 +58,7 @@ Repeat the desired flags on every build; changing flags restores pre-feature
 settings and preserves unrelated configuration edits. Old configurations are
 backed up when migrating from the previous always-enabled script.
 Display modes: stock 60 Hz plus experimental 75/90 Hz from Bool-X's pinned
-16-HyperMiui-erofs source. 75 Hz is preferred; the stock 60 Hz mode remains available. That source
+16-HyperMiui-erofs source. Stock 60 Hz is preferred. That source
 does not implement 120 Hz. Higher rates require device testing and a matching
 rebuilt DTBO; repacking boot.img alone preserves the stock display device tree.
 Requires a Linux x86_64 host.
@@ -200,8 +201,7 @@ fi
 if [[ -n ${STOCK_DTBO_IMG:-} ]]; then
     [[ -s $STOCK_DTBO_IMG ]] || die "Working DTBO image not found: $STOCK_DTBO_IMG"
     STOCK_DTBO_IMG=$(realpath -- "$STOCK_DTBO_IMG")
-    if [[ $MODE == build || $MODE == dtbo-only ]] &&
-       { (( WITH_ROM_DTBO_PATCH )) || [[ -z ${DTBO_INDEX:-} || $DTBO_INDEX == 11 ]]; }; then
+    if [[ $MODE == build || $MODE == dtbo-only ]]; then
         rom_dtbo_hash=$(python3 - "$STOCK_DTBO_IMG" <<'PY'
 import hashlib, sys
 hasher = hashlib.sha256()
@@ -210,8 +210,10 @@ with open(sys.argv[1], 'rb') as source:
         hasher.update(chunk)
 print(hasher.hexdigest())
 PY
-      )
+        )
         if [[ $rom_dtbo_hash == 2a7fedf9e370b421227879ae1ca035b30028bbdbf7f7265b553770d3c60a9674 ]]; then
+            [[ -z ${DTBO_INDEX:-} || $DTBO_INDEX == 11 ]] ||
+                die 'This verified ROM DTBO uses entry 11; remove the conflicting DTBO_INDEX.'
             WITH_ROM_DTBO_PATCH=1
             DTBO_INDEX=11
             printf 'Recognized the verified LineageOS 17 DTBO; using entry 11 automatically.\n'
@@ -242,7 +244,7 @@ import base64, hashlib, lzma, os, pathlib, subprocess, sys, tempfile
 
 original, output = map(pathlib.Path, sys.argv[1:])
 input_hash = '2a7fedf9e370b421227879ae1ca035b30028bbdbf7f7265b553770d3c60a9674'
-output_hash = '9f4b9690d3e7c9f484aab4e23c9bc4df8a7a8ae47f57e2c876c7277f35ce5349'
+output_hash = '73fc003db9a490436cf909912d0bef065419b317564ce8cdc79ce415a47cf306'
 def sha256(path):
     h = hashlib.sha256()
     with path.open('rb') as stream:
@@ -256,60 +258,60 @@ if sha256(original) != input_hash:
 
 # Fixed binary delta for the verified LineageOS 17 Raphael DTBO, entry 11.
 encoded = b"""
-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
+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
-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
-tEaSAAHCF/EjAACLqWRJscRn+wIAAAAABFla
+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
+6gIwAAHBF/EjAAAl2/DPscRn+wIAAAAABFla
 """
 with tempfile.TemporaryDirectory(prefix='.rom-dtbo-', dir=output.parent) as work:
     patch = pathlib.Path(work) / 'patch.zst'
@@ -811,12 +813,18 @@ for name, expected in native.items():
         if mode_ids != ['0'] or original.count(suffix) != 1:
             fail(f'{name}: unexpected existing display modes or layout')
         updated = original.replace(suffix, addition + suffix, 1)
-    preference = 'qcom,mdss-dsi-preferred-refresh-rate = <75>;'
+    preference = 'qcom,mdss-dsi-preferred-refresh-rate = <60>;'
+    previous_preference = 'qcom,mdss-dsi-preferred-refresh-rate = <75>;'
     panel_type = '\t\tqcom,mdss-dsi-panel-type = "dsi_cmd_mode";'
-    if preference not in updated:
-        if 'qcom,mdss-dsi-preferred-refresh-rate' in updated or updated.count(panel_type) != 1:
+    preference_count = updated.count('qcom,mdss-dsi-preferred-refresh-rate')
+    if preference_count == 0:
+        if updated.count(panel_type) != 1:
             fail(f'{name}: unexpected preferred refresh rate or panel layout')
         updated = updated.replace(panel_type, panel_type + '\n\t\t' + preference, 1)
+    elif preference_count == 1 and previous_preference in updated:
+        updated = updated.replace(previous_preference, preference, 1)
+    elif preference_count != 1 or preference not in updated:
+        fail(f'{name}: unexpected preferred refresh rate or panel layout')
     if node(updated, r'^\t{3}timing@0\s*\{')[2] != native60:
         fail(f'{name}: stock timing preservation failed')
     changes[path] = (original, updated)
@@ -842,6 +850,27 @@ changes[central_path] = (central_original, central)
 
 # The parent script embeds the reviewed driver edits here before writing changes.
 driver_edits = json.loads(r'''{"drivers/gpu/drm/msm/dsi-staging/dsi_panel.c":[["\ttiming = &mode->timing;\n\n\tif (panel_mode == DSI_OP_CMD_MODE) {\n","\ttiming = &mode->timing;\n\n\t/* Opt-in timings derive the command-mode pixel clock from the transfer\n\t * budget directly. Dividing by transfer time before multiplication would\n\t * truncate to a whole Hz and undershoot the matching DSI link clock.\n\t * Existing timings keep the original calculation below.\n\t */\n\tif (utils->read_bool(utils->data,\n\t\t\t\"qcom,mdss-dsi-transfer-time-pclk\")) {\n\t\tif (panel_mode != DSI_OP_CMD_MODE || timing->dsc_enabled ||\n\t\t    !timing->refresh_rate || !timing->clk_rate_hz ||\n\t\t    !priv_info->mdp_transfer_time_us ||\n\t\t    priv_info->mdp_transfer_time_us >=\n\t\t\tTICKS_IN_MICRO_SECOND / timing->refresh_rate) {\n\t\t\tpr_err(\"invalid clock-derived command-mode transfer budget\\n\");\n\t\t\treturn -EINVAL;\n\t\t}\n\t\tpixel_clk_khz = (u64)DSI_H_ACTIVE_DSC(timing) *\n\t\t\ttiming->v_active * 1000;\n\t\tdo_div(pixel_clk_khz, priv_info->mdp_transfer_time_us);\n\t\tmode->pixel_clk_khz = pixel_clk_khz;\n\t\treturn 0;\n\t}\n\n\tif (panel_mode == DSI_OP_CMD_MODE) {\n"]],"drivers/gpu/drm/msm/dsi-staging/dsi_drm.c":[["\t\t/* No DMS/VRR when drm pipeline is changing */\n\t\tif (!drm_mode_equal(&cur_mode, adjusted_mode) &&\n","\t\t/* Without panel timing-switch commands, use a complete modeset so\n\t\t * the destination mode's full on/off command sequences are sent.\n\t\t * No DMS/VRR when the DRM pipeline is changing.\n\t\t */\n\t\tif (display->panel->dms_mode != DSI_DMS_MODE_DISABLED &&\n\t\t\t!drm_mode_equal(&cur_mode, adjusted_mode) &&\n"],["static void dsi_drm_update_dtd(struct edid *edid,\n\t\tstruct dsi_display_mode *modes, u32 modes_count)\n","static void dsi_drm_update_dtd(struct edid *edid,\n\t\tstruct dsi_display_mode *modes, u32 modes_count,\n\t\tu32 preferred_index, bool nominal_preferred)\n"],["\t\tstruct dsi_display_mode *mode = &modes[i];\n\t\tstruct dsi_mode_info *timing = &mode->timing;\n","\t\tu32 mode_index = i == 0 ? preferred_index :\n\t\t\t(i <= preferred_index ? i - 1 : i);\n\t\tstruct dsi_display_mode *mode = &modes[mode_index];\n\t\tstruct dsi_mode_info *timing = &mode->timing;\n"],["\t\tdtd->pixel_clock = mode->pixel_clk_khz / 10;\n","\t\t/* A command-mode transfer clock is not its nominal scan clock. */\n\t\tif (i == 0 && nominal_preferred)\n\t\t\tdtd->pixel_clock = div_u64((u64)(timing->h_active + h_blank) *\n\t\t\t\t(timing->v_active + v_blank) * timing->refresh_rate +\n\t\t\t\t5000, 10000);\n\t\telse\n\t\t\tdtd->pixel_clock = mode->pixel_clk_khz / 10;\n"],["\tu32 count = 0, edid_size;\n\tstruct dsi_display_mode *modes = NULL;\n","\tu32 count = 0, edid_size, preferred_index = 0, preferred_rate = 0;\n\tbool nominal_preferred = false;\n\tstruct dsi_display_mode *modes = NULL;\n"],["\tfor (i = 0; i < count; i++) {\n\t\tstruct drm_display_mode *m;\n","\t/* Keep source mode order and bootloader timing indices unchanged. */\n\tif (display->panel &&\n\t    !display->panel->utils.read_u32(display->panel->utils.data,\n\t\t\t\"qcom,mdss-dsi-preferred-refresh-rate\",\n\t\t\t&preferred_rate)) {\n\t\tfor (i = 0; i < count; i++) {\n\t\t\tif (modes[i].timing.refresh_rate == preferred_rate) {\n\t\t\t\tpreferred_index = i;\n\t\t\t\tnominal_preferred = true;\n\t\t\t\tbreak;\n\t\t\t}\n\t\t}\n\t}\n\n\tfor (i = 0; i < count; i++) {\n\t\tstruct drm_display_mode *m;\n"],["\t\t/* set the first mode in list as preferred */\n\t\tif (i == 0)\n","\t\t/* Prefer the requested rate, or the first mode if unspecified. */\n\t\tif (i == preferred_index)\n"],["\tdsi_drm_update_dtd(&edid, modes, count);\n","\tdsi_drm_update_dtd(&edid, modes, count, preferred_index, nominal_preferred);\n"]],"Documentation/devicetree/bindings/drm/msm/mdss-dsi-panel.txt":[["- qcom,mdss-dsi-on-command-state:","- qcom,mdss-dsi-transfer-time-pclk: Boolean on a command-mode timing node.\n\t\t\t\t\tCalculate pixel clock directly from active pixels and\n\t\t\t\t\tqcom,mdss-mdp-transfer-time-us, avoiding whole-Hz\n\t\t\t\t\ttruncation. Requires an explicit nonzero panel clock,\n\t\t\t\t\ta positive transfer time shorter than one frame,\n\t\t\t\t\tand an uncompressed command-mode timing.\n\t\t\t\t\tAbsent: retain the existing pixel-clock calculation.\n- qcom,mdss-dsi-on-command-state:"],["- qcom,mdss-dsi-transfer-time-pclk: Boolean on a command-mode timing node.\n","- qcom,mdss-dsi-preferred-refresh-rate: Preferred display mode refresh rate, in Hz.\n\t\t\t\t\tIf unavailable, the first timing remains preferred.\n- qcom,mdss-dsi-transfer-time-pclk: Boolean on a command-mode timing node.\n"]],"drivers/gpu/drm/msm/sde/sde_encoder.c":[["void sde_encoder_kickoff(struct drm_encoder *drm_enc, bool is_error)\n{\n\tstruct sde_encoder_virt *sde_enc;\n","void sde_encoder_kickoff(struct drm_encoder *drm_enc, bool is_error)\n{\n\tstatic bool first_primary_dsi_kickoff = true;\n\tstruct sde_encoder_virt *sde_enc;\n"],["\t/* allow phys encs to handle any post-kickoff business */\n\tfor (i = 0; i < sde_enc->num_phys_encs; i++) {\n\t\tphys = sde_enc->phys_encs[i];\n\t\tif (phys && phys->ops.handle_post_kickoff)\n\t\t\tphys->ops.handle_post_kickoff(phys);\n\t}\n\n\tif (sde_enc->disp_info.intf_type == DRM_MODE_CONNECTOR_DSI &&\n","\t/* allow phys encs to handle any post-kickoff business */\n\tfor (i = 0; i < sde_enc->num_phys_encs; i++) {\n\t\tphys = sde_enc->phys_encs[i];\n\t\tif (phys && phys->ops.handle_post_kickoff)\n\t\t\tphys->ops.handle_post_kickoff(phys);\n\t}\n\n\t/* The bootloader initializes the panel at 60 Hz. If userspace selects a\n\t * different mode for the first continuous-splash frame, request one\n\t * existing ESD-recovery cycle to send that mode's complete on sequence.\n\t * Consume the flag only for a valid primary DSI kickoff; a normal 60 Hz\n\t * boot does not reset, and DisplayPort/secondary kickoffs cannot claim it.\n\t */\n\tif (!is_error && sde_enc->disp_info.intf_type == DRM_MODE_CONNECTOR_DSI &&\n\t\t\tsde_enc->disp_info.is_primary && sde_enc->crtc &&\n\t\t\tsde_enc->cur_master && sde_enc->cur_master->connector &&\n\t\t\tcmpxchg(&first_primary_dsi_kickoff, true, false) &&\n\t\t\tsde_enc->crtc->mode.vrefresh != 60) {\n\t\tstruct sde_connector *conn = container_of(\n\t\t\tsde_enc->cur_master->connector, struct sde_connector, base);\n\t\tstruct drm_event event = {\n\t\t\t.type = DRM_EVENT_PANEL_DEAD,\n\t\t\t.length = sizeof(bool),\n\t\t};\n\n\t\tif (!conn->panel_dead) {\n\t\t\tconn->panel_dead = true;\n\t\t\tmsm_mode_object_event_notify(&conn->base.base,\n\t\t\t\tconn->base.dev, &event, (u8 *)&conn->panel_dead);\n\t\t}\n\t}\n\n\tif (sde_enc->disp_info.intf_type == DRM_MODE_CONNECTOR_DSI &&\n"],["\tdrm_set_preferred_mode(conn, drm_mode->hdisplay, drm_mode->vdisplay);\n","\t/* Keep an explicit 75 Hz DSI preference instead of marking all modes\n\t * with the same resolution preferred during continuous splash.\n\t */\n\tif (sde_enc->disp_info.intf_type == DRM_MODE_CONNECTOR_DSI &&\n\t    sde_enc->disp_info.is_primary) {\n\t\tstruct drm_display_mode *candidate;\n\t\tbool has_preferred_75 = false;\n\n\t\tlist_for_each_entry(candidate, &conn->probed_modes, head) {\n\t\t\tif (candidate->vrefresh == 75 &&\n\t\t\t    (candidate->type & DRM_MODE_TYPE_PREFERRED)) {\n\t\t\t\thas_preferred_75 = true;\n\t\t\t\tbreak;\n\t\t\t}\n\t\t}\n\t\tif (!has_preferred_75)\n\t\t\tdrm_set_preferred_mode(conn, drm_mode->hdisplay,\n\t\t\t\t\tdrm_mode->vdisplay);\n\t} else {\n\t\tdrm_set_preferred_mode(conn, drm_mode->hdisplay, drm_mode->vdisplay);\n\t}\n"]]}''')
+# Preserve a selected mode of the current resolution through splash setup;
+# migrate the earlier 75-only edit without altering unrecognized source edits.
+encoder_rules = driver_edits['drivers/gpu/drm/msm/sde/sde_encoder.c']
+legacy_preference = None
+for rule in encoder_rules:
+    if 'has_preferred_75' in rule[1]:
+        if legacy_preference is not None:
+            fail('multiple continuous-splash preference edits')
+        legacy_preference = rule[1]
+        rule[1] = (legacy_preference
+            .replace('an explicit 75 Hz DSI preference', 'the DSI preferred mode')
+            .replace('has_preferred_75', 'has_preferred_mode')
+            .replace('candidate->vrefresh == 75 &&',
+                     'candidate->hdisplay == drm_mode->hdisplay &&\n'
+                     '\t\t\t    candidate->vdisplay == drm_mode->vdisplay &&'))
+        if rule[1] == legacy_preference or 'candidate->vrefresh == 75' in rule[1]:
+            fail('unexpected continuous-splash preference edit')
+        general_preference = rule[1]
+if legacy_preference is None:
+    fail('missing continuous-splash preference edit')
+
 for name, replacements in driver_edits.items():
     path = root / name
     is_binding_doc = name == 'Documentation/devicetree/bindings/drm/msm/mdss-dsi-panel.txt'
@@ -850,6 +879,10 @@ for name, replacements in driver_edits.items():
         continue
     original = path.read_text()
     updated = original
+    if name == 'drivers/gpu/drm/msm/sde/sde_encoder.c' and legacy_preference in updated:
+        if updated.count(legacy_preference) != 1:
+            fail(f'{name}: multiple prior splash preference edits')
+        updated = updated.replace(legacy_preference, general_preference, 1)
     for old, new in replacements:
         if new in updated:
             continue
@@ -870,7 +903,7 @@ output.mkdir(parents=True, exist_ok=True)
 report = output / 'display-modes.txt'
 report.write_text(
     'Raphael EA8076 display source modes: 60, 75, 90 Hz\n'
-    '75 Hz is the preferred mode; native 60 Hz timing and PHY settings remain available.\n'
+    '60 Hz is the preferred mode; native 60 Hz timing and PHY settings remain available.\n'
     f'Bool-X source revision: {revision}\n'
     '75/90 Hz use published DDIC/clock/PHY data plus explicit transfer budgets.\n'
     '120 Hz is not implemented by this source and has not been added.\n'
@@ -879,7 +912,7 @@ report.write_text(
 with report.open('a') as stream:
     for name, options in retained.items():
         stream.write(f'{name}: retained stock-only commands: {", ".join(options)}\n')
-print('Raphael display source modes prepared: 60/75/90 Hz (75 Hz preferred).')
+print('Raphael display source modes prepared: 60/75/90 Hz (60 Hz preferred).')
 print(f'Display source report: {report}')
 PYDISPLAY
 }
@@ -1486,5 +1519,6 @@ if [[ -n ${STOCK_DTBO_IMG:-} ]]; then
     pack_dtbo_image
 else
     printf '\nDisplay device tree: %s/arch/arm64/boot/dts/qcom/raphael-sm8150-overlay.dtbo\n' "$OUT_DIR"
-    printf 'To package a matching dtbo.img, supply STOCK_DTBO_IMG and DTBO_INDEX.\n'
+    printf 'To package your verified original DTBO, set STOCK_DTBO_IMG and run ./build.sh --dtbo-only.\n'
+    printf 'Other DTBO templates require a verified DTBO_INDEX.\n'
 fi
