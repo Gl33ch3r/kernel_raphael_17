@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # All-in-one Raphael branch 17 build: Boolx Clang 22, NetHunter, 88x2bu,
-# KernelSU-Next legacy, stock 60 Hz or reviewed 60/75/90 Hz display, boot/DTBO
+# KernelSU-Next legacy, in-tree EA8076 60/69/72/81/90 Hz timings, boot/DTBO
 # packaging.
 set -Eeuo pipefail
 
@@ -17,7 +17,7 @@ Options:
   --nethunter    Enable the NetHunter kernel configuration profile
   --bootimg-only Package an existing compiled kernel using STOCK_BOOT_IMG
   --dtbo-only    Create a DTBO image using STOCK_DTBO_IMG
-  --oc-display   Package 6-20_dtbo_60-75-90.img as the display DTBO
+  --oc-display   Package the in-tree 60/69/72/81/90 Hz EA8076 DTBO
   --wifi-diagnose Collect adapter diagnostics through adb
   --help, -h     Show this help
 Feature flags can be combined and may appear before or after make targets.
@@ -44,7 +44,7 @@ Examples:
   STOCK_BOOT_IMG=/path/to/working/boot.img ./build.sh
   STOCK_BOOT_IMG=/path/to/working/boot.img ./build.sh --bootimg-only
   STOCK_DTBO_IMG=/path/to/original/dtbo.img ./build.sh --dtbo-only
-  ./build.sh --dtbo-only --oc-display
+  STOCK_DTBO_IMG=/path/to/original/dtbo.img ./build.sh --dtbo-only --oc-display
 
 Debian/Ubuntu host dependencies:
   build-essential bc bison flex libssl-dev libelf-dev zlib1g-dev
@@ -57,10 +57,11 @@ Use a template from the same Raphael ROM. Its ramdisk and device trees are
 preserved. magiskboot is downloaded automatically; MAGISKBOOT can override it.
 ROM-specific image signing is separate.
 DTBO packaging copies the reviewed original LineageOS 17 Raphael image byte for
-byte into out/dtbo.img. --oc-display packages 6-20_dtbo_60-75-90.img unchanged; it
-is the only source of the 60/75/90 Hz display modes. 60 Hz stays preferred and
-75/90 Hz are only selectable where the running vendor display stack supports the
-switch.
+byte into out/dtbo.img unless --oc-display is given. --oc-display builds the
+Raphael overlay from the in-tree EA8076 timings (60/69/72/81/90 Hz) and installs
+it into a copy of the original DTBO table, preserving the other entries. 60 Hz
+stays the default mode; the higher rates are only selectable where the running
+vendor display stack honours the timing-switch commands.
 EOF
 }
 
@@ -74,7 +75,7 @@ while (( $# )); do
         --ksu) WITH_KSU=1 ;;
         --nethunter) WITH_NETHUNTER=1 ;;
         --oc-display) WITH_OC_DISPLAY=1 ;;
-        --high-refresh) die 'The high-refresh overclock was removed. Build with stock 60 Hz timings.' ;;
+        --high-refresh) die 'Use --oc-display for the in-tree 60/69/72/81/90 Hz display timings.' ;;
         --rom-dtbo-patch) die '--rom-dtbo-patch was removed; use the original ROM DTBO with --dtbo-only.' ;;
         --help|-h) show_help; exit 0 ;;
         --bootimg-only|--dtbo-only|--wifi-diagnose)
@@ -92,10 +93,9 @@ if [[ $MODE != build ]]; then
         die '--ksu and --nethunter require a build; they cannot change an already compiled kernel or run diagnostics.'
     (( $# == 0 )) || die "--$MODE does not accept make targets/options."
 fi
-if (( WITH_OC_DISPLAY )) && [[ $MODE == bootimg-only ]]; then
+if (( WITH_OC_DISPLAY )) && [[ $MODE != build && $MODE != dtbo-only ]]; then
     die '--oc-display packages a DTBO; use it with --dtbo-only or a build.'
 fi
-
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 cd "$ROOT"
 wifi_diagnose() {
@@ -174,10 +174,10 @@ with open(sys.argv[1], 'rb') as f:
         sys.exit('Error: STOCK_BOOT_IMG must be an Android boot.img.')
 PY
 fi
-
-if [[ $MODE == dtbo-only && -z ${STOCK_DTBO_IMG:-} ]] && (( WITH_OC_DISPLAY == 0 )); then
+if [[ $MODE == dtbo-only && -z ${STOCK_DTBO_IMG:-} ]]; then
     die 'Set STOCK_DTBO_IMG to a working dtbo.img from the same Raphael ROM.'
 fi
+
 if [[ -n ${STOCK_DTBO_IMG:-} ]]; then
     [[ -s $STOCK_DTBO_IMG ]] || die "Working DTBO image not found: $STOCK_DTBO_IMG"
     STOCK_DTBO_IMG=$(realpath -- "$STOCK_DTBO_IMG")
@@ -229,123 +229,215 @@ print(f'Original ROM DTBO copied unchanged: {output}')
 PYSTOCKDTBO
 )
 
+verify_oc_display_sources() (
+    command -v python3 >/dev/null 2>&1 || die 'python3 is required.'
+    python3 - "$ROOT/arch/arm64/boot/dts/qcom" <<'PYOCSRC'
+"""Confirm the EA8076 sources still carry the ported 60/69/72/81/90 Hz modes."""
+import pathlib
+import re
+import sys
+
+base = pathlib.Path(sys.argv[1])
+files = [
+    'dsi-panel-ss-fhd-ea8076-cmd.dtsi',
+    'dsi-panel-ss-fhd-ea8076-global-cmd.dtsi',
+    'dsi-panel-samsung-fhd-ea8076-f1-cmd.dtsi',
+    'dsi-panel-samsung-fhd-ea8076-f1mp-cmd.dtsi',
+    'dsi-panel-samsung-fhd-ea8076-f1p2-cmd.dtsi',
+    'dsi-panel-samsung-fhd-ea8076-f1p2-2-cmd.dtsi',
+]
+expected = [60, 69, 72, 81, 90]
+failed = False
+for name in files:
+    path = base / name
+    if not path.is_file():
+        print('missing panel source: %s' % name, file=sys.stderr)
+        failed = True
+        continue
+    text = path.read_text()
+    timings = len(re.findall(r'\btiming@\d+\s*\{', text))
+    rates = sorted(int(rate) for rate in
+                   re.findall(r'qcom,mdss-dsi-panel-framerate\s*=\s*<(\d+)>', text))
+    switches = len(re.findall(r'qcom,mdss-dsi-timing-switch-command\s*=', text))
+    if timings != 5 or rates != expected:
+        print('%s: expected 5 timings %s, found %d with %s'
+              % (name, expected, timings, rates), file=sys.stderr)
+        failed = True
+    if switches != timings:
+        print('%s: %d timings but %d timing-switch commands'
+              % (name, timings, switches), file=sys.stderr)
+        failed = True
+    if 'qcom,mdss-dsi-panel-clockrate = <1500000000>' not in text:
+        print('%s: missing the 90 Hz clock rate' % name, file=sys.stderr)
+        failed = True
+    if name.startswith('dsi-panel-ss-fhd-') and 'A9 A1 4A 00 1A B8' not in text:
+        print('%s: missing the overclocked panel command' % name, file=sys.stderr)
+        failed = True
+    print('%-46s timings=%d rates=%s switches=%d'
+          % (name, timings, '/'.join(str(rate) for rate in rates), switches))
+if failed:
+    sys.exit('Error: the EA8076 sources no longer match the ported display modes.')
+PYOCSRC
+)
+
 pack_oc_dtbo_image() (
     command -v python3 >/dev/null 2>&1 || die 'python3 is required.'
-    local OC_IMAGE=$ROOT/6-20_dtbo_60-75-90.img
-    [[ -s $OC_IMAGE ]] || die "Missing display DTBO: $OC_IMAGE"
-    OC_IMAGE=$(realpath -- "$OC_IMAGE")
-    python3 - "$OC_IMAGE" "$OUT_DIR/dtbo.img" <<'PYOCDTBO'
-"""Install the reviewed Raphael 60/75/90 Hz display DTBO unmodified."""
-import hashlib
-import os
+    local overlay="$OUT_DIR/arch/arm64/boot/dts/qcom/raphael-sm8150-overlay.dtbo"
+    [[ -s $overlay ]] || die "Missing compiled overlay: $overlay (run a build first)."
+    [[ -n ${STOCK_DTBO_IMG:-} ]] ||
+        die 'Set STOCK_DTBO_IMG to the original ROM DTBO table image.'
+    python3 - "$STOCK_DTBO_IMG" "$overlay" "$OUT_DIR/dtbo.img" <<'PYOCDTBO'
+"""Install the built Raphael overlay into a copy of the original DTBO table."""
 import pathlib
+import os
 import struct
 import sys
 import tempfile
 
-source, output = map(pathlib.Path, sys.argv[1:3])
-reviewed_hash = 'bebf0da030dcf433ff2a2e633fbd56f89215244e1f2f73735e1798422fc17664'
+template, overlay, output = map(pathlib.Path, sys.argv[1:4])
+expected = [60, 69, 72, 81, 90]
 
-def sha256(path):
-    digest = hashlib.sha256()
-    with path.open('rb') as stream:
-        for chunk in iter(lambda: stream.read(1048576), b''):
-            digest.update(chunk)
-    return digest.hexdigest()
 
-if source == output or (output.exists() and os.path.samefile(source, output)):
-    sys.exit('Error: DTBO output must differ from the reviewed image.')
-raw = source.read_bytes()
-if sha256(source) != reviewed_hash:
-    sys.exit('Error: 6-20_dtbo_60-75-90.img is not the reviewed display DTBO.')
+def parse(blob):
+    """Return (model, {timing path: {'fps': rate, 'switch': bool}})."""
+    if len(blob) < 40:
+        raise ValueError('truncated device tree')
+    magic, size, off_struct, off_strings = struct.unpack('>4I', blob[:16])
+    if magic != 0xd00dfeed or size > len(blob):
+        raise ValueError('not a device tree blob')
+    size_strings = struct.unpack('>I', blob[32:36])[0]
+    strings = blob[off_strings:off_strings + size_strings]
+    model = ''
+    timings = {}
+    stack = []
+    node = '/'
+    pos = off_struct
+    while pos + 4 <= len(blob):
+        token = struct.unpack('>I', blob[pos:pos + 4])[0]
+        pos += 4
+        if token == 1:
+            end = blob.index(b'\0', pos)
+            name = blob[pos:end].decode()
+            pos = (end + 4) & ~3
+            if not stack:
+                stack.append('/')
+            elif name:
+                stack.append(stack[-1].rstrip('/') + '/' + name)
+            node = stack[-1]
+            if name.startswith('timing'):
+                timings[node] = {'switch': False}
+        elif token == 2:
+            if len(stack) > 1:
+                stack.pop()
+            node = stack[-1] if stack else '/'
+        elif token == 3:
+            length, name_offset = struct.unpack('>II', blob[pos:pos + 8])
+            pos += 8
+            value = blob[pos:pos + length]
+            pos = (pos + length + 3) & ~3
+            end = strings.index(b'\0', name_offset)
+            prop = strings[name_offset:end].decode()
+            if node == '/' and prop == 'model':
+                model = value.rstrip(b'\0').decode(errors='replace')
+            if node in timings:
+                if prop == 'qcom,mdss-dsi-panel-framerate' and len(value) == 4:
+                    timings[node]['fps'] = struct.unpack('>I', value)[0]
+                elif prop == 'qcom,mdss-dsi-timing-switch-command':
+                    timings[node]['switch'] = True
+        elif token == 4:
+            continue
+        elif token == 9:
+            break
+        else:
+            raise ValueError('corrupt device tree')
+    return model, timings
+
+
+raw = template.read_bytes()
 if len(raw) < 64:
-    sys.exit('Error: truncated DTBO image.')
+    sys.exit('Error: truncated DTBO template.')
 magic, total, header_size, entry_size, count, entries, page_size, version = \
     struct.unpack('>8I', raw[:32])
 if magic != 0xd7b7ab1e or version not in (0, 1) or total != len(raw):
-    sys.exit('Error: 6-20_dtbo_60-75-90.img is not a complete Android DTBO table image.')
-if header_size != 32 or count != 1 or entries + entry_size > len(raw):
-    sys.exit('Error: expected exactly one Raphael device tree in the DTBO.')
-size, offset = struct.unpack('>2I', raw[entries:entries + 8])
-if offset < header_size or offset + size > len(raw):
-    sys.exit('Error: the DTBO entry points outside the image.')
-fdt = raw[offset:offset + size]
-fdt_magic, fdt_size, struct_offset, strings_offset = struct.unpack('>4I', fdt[:16])
-if fdt_magic != 0xd00dfeed or fdt_size != size:
-    sys.exit('Error: the DTBO entry is not a device tree blob.')
-size_strings = struct.unpack('>I', fdt[32:36])[0]
-strings = fdt[strings_offset:strings_offset + size_strings]
-pos = struct_offset
-stack = []
-current = '/'
-model = None
-modes = {}
-while True:
-    if pos + 4 > len(fdt):
-        sys.exit('Error: truncated device tree in the reviewed DTBO.')
-    token = struct.unpack('>I', fdt[pos:pos + 4])[0]
-    pos += 4
-    if token == 1:
-        end = fdt.index(b'\0', pos)
-        name = fdt[pos:end].decode()
-        pos = (end + 4) & ~3
-        if not stack:
-            stack.append('/')
-        elif name:
-            stack.append(stack[-1].rstrip('/') + '/' + name)
-        current = stack[-1]
-        if name.startswith('timing'):
-            modes[current] = {}
-    elif token == 2:
-        if len(stack) > 1:
-            stack.pop()
-        current = stack[-1] if stack else '/'
-    elif token == 3:
-        length, name_offset = struct.unpack('>II', fdt[pos:pos + 8])
-        pos += 8
-        value = fdt[pos:pos + length]
-        pos = (pos + length + 3) & ~3
-        end = strings.index(b'\0', name_offset)
-        prop = strings[name_offset:end].decode()
-        if prop == 'model':
-            model = value.rstrip(b'\0').decode()
-        elif current in modes and len(value) == 4:
-            if prop == 'qcom,mdss-dsi-panel-framerate':
-                modes[current]['fps'] = struct.unpack('>I', value)[0]
-        if current in modes and prop == 'qcom,mdss-dsi-timing-switch-command':
-            modes[current]['switch'] = True
-    elif token == 4:
-        continue
-    elif token == 9:
-        break
-    else:
-        sys.exit('Error: corrupt device tree in the reviewed DTBO.')
+    sys.exit('Error: STOCK_DTBO_IMG is not a complete Android DTBO table image.')
+if header_size != 32 or entry_size != 32 or not count:
+    sys.exit('Error: unsupported DTBO table layout.')
+if entries + count * entry_size > len(raw):
+    sys.exit('Error: truncated DTBO entry table.')
 
+blob = overlay.read_bytes()
+model, built = parse(blob)
 if model != 'RAPHAEL':
-    sys.exit('Error: the reviewed DTBO does not target Raphael.')
-# Only the EA8076 command-mode panels carry the Raphael display modes; the
-# simulated panels elsewhere in the overlay are not runtime-switchable.
-panels = {path_: mode for path_, mode in modes.items() if 'ea8076' in path_}
+    sys.exit('Error: the built overlay does not target Raphael.')
+panels = {path: mode for path, mode in built.items() if 'ea8076' in path}
 if not panels:
-    sys.exit('Error: the reviewed DTBO has no EA8076 display timings.')
+    sys.exit('Error: the built overlay has no EA8076 display timings.')
 rates = sorted({mode['fps'] for mode in panels.values() if mode.get('fps')})
-if not {60, 75, 90}.issubset(rates):
-    sys.exit('Error: expected 60/75/90 Hz EA8076 timings, found %s.'
+if rates != expected:
+    sys.exit('Error: expected 60/69/72/81/90 Hz EA8076 timings, found %s.'
              % '/'.join(str(rate) for rate in rates))
-for path_, mode in panels.items():
+for path, mode in panels.items():
     if mode.get('fps', 0) > 60 and not mode.get('switch'):
-        sys.exit('Error: %s has no timing-switch command.' % path_)
+        sys.exit('Error: %s has no timing-switch command.' % path)
 
+entries_data = []
+for index in range(count):
+    start = entries + index * entry_size
+    size, offset, entry_id, revision, c0, c1, c2, c3 = \
+        struct.unpack('>8I', raw[start:start + 32])
+    if offset < header_size or offset + size > len(raw):
+        sys.exit('Error: DTBO entry %d points outside the template.' % index)
+    model, _ = parse(raw[offset:offset + size])
+    entries_data.append({
+        'size': size, 'id': entry_id, 'rev': revision,
+        'custom': (c0, c1, c2, c3), 'blob': raw[offset:offset + size],
+        'model': model, 'index': index,
+    })
+
+wanted = {entry['index'] for entry in entries_data if entry['model'] == 'RAPHAEL'}
+if not wanted:
+    sys.exit('Error: the DTBO template has no Raphael entry to replace.')
+
+page = page_size or 2048
+table = bytearray()
+body = bytearray()
+cursor = 32 + count * 32
+cursor += (-cursor) % page
+for entry in entries_data:
+    use = blob if entry['index'] in wanted else entry['blob']
+    table += struct.pack('>8I', len(use), cursor, entry['id'], entry['rev'],
+                         *entry['custom'])
+    padded = use + b'\0' * ((-len(use)) % page)
+    body += padded
+    cursor += len(padded)
+image = bytearray(struct.pack('>8I', magic, 0, 32, 32, count, 32, page, version))
+image += table
+image += b'\0' * ((-len(image)) % page)
+image += body
+image += b'\0' * ((-len(image)) % page)
+struct.pack_into('>I', image, 4, len(image))
+
+check_magic, check_total, _, _, check_count, check_entries, _, _ = \
+    struct.unpack('>8I', bytes(image[:32]))
+if check_magic != 0xd7b7ab1e or check_total != len(image) or check_count != count:
+    sys.exit('Error: rebuilt DTBO table failed its own header check.')
+for index in range(count):
+    start = check_entries + index * 32
+    size, offset = struct.unpack('>2I', bytes(image[start:start + 8]))
+    if offset + size > len(image):
+        sys.exit('Error: rebuilt DTBO entry %d is out of bounds.' % index)
+
+if output.resolve() == template.resolve():
+    sys.exit('Error: DTBO output must differ from STOCK_DTBO_IMG.')
 output.parent.mkdir(parents=True, exist_ok=True)
 with tempfile.TemporaryDirectory(prefix='.oc-dtbo-', dir=output.parent) as work:
     result = pathlib.Path(work) / 'dtbo.img'
-    result.write_bytes(raw)
-    if sha256(result) != reviewed_hash:
-        sys.exit('Error: DTBO copy failed its SHA-256 check.')
+    result.write_bytes(bytes(image))
     os.replace(result, output)
-print('6-20_dtbo_60-75-90.img installed: %s' % output)
-print('Display timings in the overlay: %s Hz; 60 Hz remains preferred.'
-      % '/'.join(str(rate) for rate in rates))
+print('Display DTBO written: %s' % output)
+print('EA8076 timings in the overlay: %s Hz; Raphael entry %s replaced in %d entries.'
+      % ('/'.join(str(rate) for rate in expected),
+         '/'.join(str(index) for index in sorted(wanted)), count))
 PYOCDTBO
 )
 
@@ -432,6 +524,7 @@ if (( BOOTIMG_ONLY )); then
 fi
 if [[ $MODE == dtbo-only ]]; then
     if (( WITH_OC_DISPLAY )); then
+        verify_oc_display_sources
         pack_oc_dtbo_image
     else
         pack_dtbo_image
@@ -496,442 +589,6 @@ for tool in make gcc g++ bc bison flex python3 perl pkg-config gzip; do
     command -v "$tool" >/dev/null 2>&1 || die "Missing host dependency: $tool (see ./build.sh --help)."
 done
 
-setup_raphael_display() {
-    # Remove the previously embedded high-refresh port, if installed, without
-    # replacing unrelated source files or requiring network/Git history.
-    python3 - "$ROOT" "$OUT_DIR" <<'PYDISPLAY'
-from pathlib import Path
-import hashlib, json, re, sys
-
-root, output = map(Path, sys.argv[1:3])
-base = Path('arch/arm64/boot/dts/qcom')
-panels = json.loads(r'''{"dsi-panel-ss-fhd-ea8076-cmd.dtsi":"dsi_ss_fhd_ea8076_cmd","dsi-panel-ss-fhd-ea8076-global-cmd.dtsi":"dsi_ss_fhd_ea8076_global_cmd","dsi-panel-samsung-fhd-ea8076-f1-cmd.dtsi":"dsi_samsung_fhd_ea8076_f1_cmd","dsi-panel-samsung-fhd-ea8076-f1mp-cmd.dtsi":"dsi_samsung_fhd_ea8076_f1mp_cmd","dsi-panel-samsung-fhd-ea8076-f1p2-cmd.dtsi":"dsi_samsung_fhd_ea8076_f1p2_cmd","dsi-panel-samsung-fhd-ea8076-f1p2-2-cmd.dtsi":"dsi_samsung_fhd_ea8076_f1p2_2_cmd"}''')
-driver_edits = json.loads(r'''{"drivers/gpu/drm/msm/dsi-staging/dsi_panel.c":[["\ttiming = &mode->timing;\n\n\tif (panel_mode == DSI_OP_CMD_MODE) {\n","\ttiming = &mode->timing;\n\n\t/* Opt-in timings derive the command-mode pixel clock from the transfer\n\t * budget directly. Dividing by transfer time before multiplication would\n\t * truncate to a whole Hz and undershoot the matching DSI link clock.\n\t * Existing timings keep the original calculation below.\n\t */\n\tif (utils->read_bool(utils->data,\n\t\t\t\"qcom,mdss-dsi-transfer-time-pclk\")) {\n\t\tif (panel_mode != DSI_OP_CMD_MODE || timing->dsc_enabled ||\n\t\t    !timing->refresh_rate || !timing->clk_rate_hz ||\n\t\t    !priv_info->mdp_transfer_time_us ||\n\t\t    priv_info->mdp_transfer_time_us >=\n\t\t\tTICKS_IN_MICRO_SECOND / timing->refresh_rate) {\n\t\t\tpr_err(\"invalid clock-derived command-mode transfer budget\\n\");\n\t\t\treturn -EINVAL;\n\t\t}\n\t\tpixel_clk_khz = (u64)DSI_H_ACTIVE_DSC(timing) *\n\t\t\ttiming->v_active * 1000;\n\t\tdo_div(pixel_clk_khz, priv_info->mdp_transfer_time_us);\n\t\tmode->pixel_clk_khz = pixel_clk_khz;\n\t\treturn 0;\n\t}\n\n\tif (panel_mode == DSI_OP_CMD_MODE) {\n"]],"drivers/gpu/drm/msm/dsi-staging/dsi_drm.c":[["\t\t/* No DMS/VRR when drm pipeline is changing */\n\t\tif (!drm_mode_equal(&cur_mode, adjusted_mode) &&\n","\t\t/* Without panel timing-switch commands, use a complete modeset so\n\t\t * the destination mode's full on/off command sequences are sent.\n\t\t * No DMS/VRR when the DRM pipeline is changing.\n\t\t */\n\t\tif (display->panel->dms_mode != DSI_DMS_MODE_DISABLED &&\n\t\t\t!drm_mode_equal(&cur_mode, adjusted_mode) &&\n"],["static void dsi_drm_update_dtd(struct edid *edid,\n\t\tstruct dsi_display_mode *modes, u32 modes_count)\n","static void dsi_drm_update_dtd(struct edid *edid,\n\t\tstruct dsi_display_mode *modes, u32 modes_count,\n\t\tu32 preferred_index, bool nominal_preferred)\n"],["\t\tstruct dsi_display_mode *mode = &modes[i];\n\t\tstruct dsi_mode_info *timing = &mode->timing;\n","\t\tu32 mode_index = i == 0 ? preferred_index :\n\t\t\t(i <= preferred_index ? i - 1 : i);\n\t\tstruct dsi_display_mode *mode = &modes[mode_index];\n\t\tstruct dsi_mode_info *timing = &mode->timing;\n"],["\t\tdtd->pixel_clock = mode->pixel_clk_khz / 10;\n","\t\t/* A command-mode transfer clock is not its nominal scan clock. */\n\t\tif (i == 0 && nominal_preferred)\n\t\t\tdtd->pixel_clock = div_u64((u64)(timing->h_active + h_blank) *\n\t\t\t\t(timing->v_active + v_blank) * timing->refresh_rate +\n\t\t\t\t5000, 10000);\n\t\telse\n\t\t\tdtd->pixel_clock = mode->pixel_clk_khz / 10;\n"],["\tu32 count = 0, edid_size;\n\tstruct dsi_display_mode *modes = NULL;\n","\tu32 count = 0, edid_size, preferred_index = 0, preferred_rate = 0;\n\tbool nominal_preferred = false;\n\tstruct dsi_display_mode *modes = NULL;\n"],["\tfor (i = 0; i < count; i++) {\n\t\tstruct drm_display_mode *m;\n","\t/* Keep source mode order and bootloader timing indices unchanged. */\n\tif (display->panel &&\n\t    !display->panel->utils.read_u32(display->panel->utils.data,\n\t\t\t\"qcom,mdss-dsi-preferred-refresh-rate\",\n\t\t\t&preferred_rate)) {\n\t\tfor (i = 0; i < count; i++) {\n\t\t\tif (modes[i].timing.refresh_rate == preferred_rate) {\n\t\t\t\tpreferred_index = i;\n\t\t\t\tnominal_preferred = true;\n\t\t\t\tbreak;\n\t\t\t}\n\t\t}\n\t}\n\n\tfor (i = 0; i < count; i++) {\n\t\tstruct drm_display_mode *m;\n"],["\t\t/* set the first mode in list as preferred */\n\t\tif (i == 0)\n","\t\t/* Prefer the requested rate, or the first mode if unspecified. */\n\t\tif (i == preferred_index)\n"],["\tdsi_drm_update_dtd(&edid, modes, count);\n","\tdsi_drm_update_dtd(&edid, modes, count, preferred_index, nominal_preferred);\n"]],"Documentation/devicetree/bindings/drm/msm/mdss-dsi-panel.txt":[["- qcom,mdss-dsi-on-command-state:","- qcom,mdss-dsi-transfer-time-pclk: Boolean on a command-mode timing node.\n\t\t\t\t\tCalculate pixel clock directly from active pixels and\n\t\t\t\t\tqcom,mdss-mdp-transfer-time-us, avoiding whole-Hz\n\t\t\t\t\ttruncation. Requires an explicit nonzero panel clock,\n\t\t\t\t\ta positive transfer time shorter than one frame,\n\t\t\t\t\tand an uncompressed command-mode timing.\n\t\t\t\t\tAbsent: retain the existing pixel-clock calculation.\n- qcom,mdss-dsi-on-command-state:"],["- qcom,mdss-dsi-transfer-time-pclk: Boolean on a command-mode timing node.\n","- qcom,mdss-dsi-preferred-refresh-rate: Preferred display mode refresh rate, in Hz.\n\t\t\t\t\tIf unavailable, the first timing remains preferred.\n- qcom,mdss-dsi-transfer-time-pclk: Boolean on a command-mode timing node.\n"]],"drivers/gpu/drm/msm/sde/sde_encoder.c":[["void sde_encoder_kickoff(struct drm_encoder *drm_enc, bool is_error)\n{\n\tstruct sde_encoder_virt *sde_enc;\n","void sde_encoder_kickoff(struct drm_encoder *drm_enc, bool is_error)\n{\n\tstatic bool first_primary_dsi_kickoff = true;\n\tstruct sde_encoder_virt *sde_enc;\n"],["\t/* allow phys encs to handle any post-kickoff business */\n\tfor (i = 0; i < sde_enc->num_phys_encs; i++) {\n\t\tphys = sde_enc->phys_encs[i];\n\t\tif (phys && phys->ops.handle_post_kickoff)\n\t\t\tphys->ops.handle_post_kickoff(phys);\n\t}\n\n\tif (sde_enc->disp_info.intf_type == DRM_MODE_CONNECTOR_DSI &&\n","\t/* allow phys encs to handle any post-kickoff business */\n\tfor (i = 0; i < sde_enc->num_phys_encs; i++) {\n\t\tphys = sde_enc->phys_encs[i];\n\t\tif (phys && phys->ops.handle_post_kickoff)\n\t\t\tphys->ops.handle_post_kickoff(phys);\n\t}\n\n\t/* The bootloader initializes the panel at 60 Hz. If userspace selects a\n\t * different mode for the first continuous-splash frame, request one\n\t * existing ESD-recovery cycle to send that mode's complete on sequence.\n\t * Consume the flag only for a valid primary DSI kickoff; a normal 60 Hz\n\t * boot does not reset, and DisplayPort/secondary kickoffs cannot claim it.\n\t */\n\tif (!is_error && sde_enc->disp_info.intf_type == DRM_MODE_CONNECTOR_DSI &&\n\t\t\tsde_enc->disp_info.is_primary && sde_enc->crtc &&\n\t\t\tsde_enc->cur_master && sde_enc->cur_master->connector &&\n\t\t\tcmpxchg(&first_primary_dsi_kickoff, true, false) &&\n\t\t\tsde_enc->crtc->mode.vrefresh != 60) {\n\t\tstruct sde_connector *conn = container_of(\n\t\t\tsde_enc->cur_master->connector, struct sde_connector, base);\n\t\tstruct drm_event event = {\n\t\t\t.type = DRM_EVENT_PANEL_DEAD,\n\t\t\t.length = sizeof(bool),\n\t\t};\n\n\t\tif (!conn->panel_dead) {\n\t\t\tconn->panel_dead = true;\n\t\t\tmsm_mode_object_event_notify(&conn->base.base,\n\t\t\t\tconn->base.dev, &event, (u8 *)&conn->panel_dead);\n\t\t}\n\t}\n\n\tif (sde_enc->disp_info.intf_type == DRM_MODE_CONNECTOR_DSI &&\n"],["\tdrm_set_preferred_mode(conn, drm_mode->hdisplay, drm_mode->vdisplay);\n","\t/* Keep an explicit 75 Hz DSI preference instead of marking all modes\n\t * with the same resolution preferred during continuous splash.\n\t */\n\tif (sde_enc->disp_info.intf_type == DRM_MODE_CONNECTOR_DSI &&\n\t    sde_enc->disp_info.is_primary) {\n\t\tstruct drm_display_mode *candidate;\n\t\tbool has_preferred_75 = false;\n\n\t\tlist_for_each_entry(candidate, &conn->probed_modes, head) {\n\t\t\tif (candidate->vrefresh == 75 &&\n\t\t\t    (candidate->type & DRM_MODE_TYPE_PREFERRED)) {\n\t\t\t\thas_preferred_75 = true;\n\t\t\t\tbreak;\n\t\t\t}\n\t\t}\n\t\tif (!has_preferred_75)\n\t\t\tdrm_set_preferred_mode(conn, drm_mode->hdisplay,\n\t\t\t\t\tdrm_mode->vdisplay);\n\t} else {\n\t\tdrm_set_preferred_mode(conn, drm_mode->hdisplay, drm_mode->vdisplay);\n\t}\n"]]}''')
-marker = '/* Bool-X 75/90 Hz modes; Copyright (C) 2021 XiaoMi, Inc.; GPL-2.0. */'
-evo_marker = '/* Evolution-X 72/81/90 Hz modes, commit 2c772d3fd9a042835a1f8489b91aa97b90be5b7f. */'
-evo_legacy_marker = '/* Evolution-X 81/90 Hz modes, commit 2c772d3fd9a042835a1f8489b91aa97b90be5b7f. */'
-evo_panels = {
-    'dsi-panel-ss-fhd-ea8076-cmd.dtsi': ('dsi_ss_fhd_ea8076_cmd', '545901f796377160d8a650db47d0afdbd1615d25ccc932345888c148575025e3'),
-    'dsi-panel-ss-fhd-ea8076-global-cmd.dtsi': ('dsi_ss_fhd_ea8076_global_cmd', '64cf89985b4cc7eed0799c1ee691290006c0acfb54fcaa5f89dc27e696eb85b3'),
-}
-miuicx_marker = '/* MIUICX R6.1 SS panel modes: 69/75 Hz. */'
-miuicx_previous_marker = '/* MIUICX R6.1 SS panel modes: 69/75/81/90 Hz. */'
-miuicx_rates = {1: (69, 1150000000), 2: (75, 1250000000),
-                3: (81, 1350000000), 4: (90, 1500000000)}
-miuicx_enabled = (1, 2)
-# DRM mode equality ignores the explicit vrefresh field. The MIUICX modes
-# share porch totals, so distinct transfer budgets give enabled modes distinct
-# pixel clocks and prevent Android from collapsing 75 Hz into 69 Hz.
-miuicx_transfers = {1: 13334, 2: 12196, 3: 11364, 4: 10205}
-miuicx_switch = {
-    'dsi-panel-ss-fhd-ea8076-cmd.dtsi':
-        '39 00 00 00 00 00 03 F0 5A 5A 39 00 00 00 00 00 03 FC 5A 5A '
-        '39 00 00 00 00 00 02 B0 23 39 00 00 00 00 00 02 D1 0F '
-        '39 00 00 00 00 00 0C E9 11 55 A6 75 A3 A9 A1 4A 00 8A 18 '
-        '39 00 00 00 00 00 03 F0 A5 A5 39 01 00 00 00 00 03 FC A5 A5',
-    'dsi-panel-ss-fhd-ea8076-global-cmd.dtsi':
-        '39 00 00 00 00 00 03 F0 5A 5A 39 00 00 00 00 00 03 FC 5A 5A '
-        '39 00 00 00 00 00 02 B0 23 39 00 00 00 00 00 02 D1 11 '
-        '39 00 00 00 00 00 0C E9 11 55 A6 75 A3 A9 A1 4A 00 8A 18 '
-        '39 00 00 00 00 00 03 F0 A5 A5 39 01 00 00 00 00 03 FC A5 A5',
-}
-mode_hashes = {
-    1: 'a393251def29ea7aaefb1343bf60d5b851f8bd92ea58258a86e74010dc8a9077',
-    3: '406e95d47e638eb55bd092148fe1a5570ab143c0454d34f95cac4c7105ad8a63',
-}
-phy_hashes = {
-    1: '97b7b4c39e37794d261cdaacd058f500060a7da56b90325843e33df55b46a2a6',
-    3: '11ecd9150f95ed00eee7d4bd1bcde852a118513c1cb6fa06a92503b4bb4565ae',
-}
-
-def fail(message):
-    sys.exit('Error: display cleanup: ' + message)
-
-def node(text, pattern):
-    matches = list(re.finditer(pattern, text, re.M))
-    if len(matches) != 1:
-        fail(f'expected one node matching {pattern!r}, found {len(matches)}')
-    match = matches[0]
-    opening = text.index('{', match.start())
-    depth = 0
-    for token in re.finditer(r'"(?:\\.|[^"\\])*"|/\*.*?\*/|//[^\n]*|[{}]', text[opening:], re.S):
-        value = token.group()
-        if value == '{':
-            depth += 1
-        elif value == '}':
-            depth -= 1
-            if depth == 0:
-                end = opening + token.end()
-                while end < len(text) and text[end] in '; \t':
-                    end += 1
-                if end < len(text) and text[end] == '\n':
-                    end += 1
-                return match.start(), end, text[match.start():end]
-    fail('unbalanced node braces')
-
-def digest(text):
-    return hashlib.sha256(text.encode()).hexdigest()
-
-def evo_mode(name, stock, index):
-    # Build from the local 60 Hz node so this ROM's command sets and optional
-    # FOD/AOD features are preserved. Only Evolution-X timing values change.
-    command = re.search(r'qcom,mdss-dsi-on-command\s*=\s*\[(.*?)\]', stock, re.S)
-    if not command:
-        fail(f'{name}: missing stock panel-on commands')
-    command_text = re.sub(r'/\*.*?\*/|//[^\n]*', '', command.group(1), flags=re.S)
-    try:
-        command_hash = hashlib.sha256(bytes.fromhex(command_text)).hexdigest()
-    except ValueError:
-        fail(f'{name}: invalid stock panel-on commands')
-    if command_hash != evo_panels[name][1]:
-        fail(f'{name}: stock panel-on commands do not match the reviewed source')
-    rate, clock, transfer = {1: (72, 1320000000, 11486), 2: (81, 1485000000, 10210), 3: (90, 1650000000, 9189)}[index]
-    values = {'h-front-porch': 22, 'h-back-porch': 16, 'h-pulse-width': 16,
-              'v-back-porch': 16 if index == 2 and 'global' in name else 22,
-              'v-front-porch': 16, 'v-pulse-width': 12 if index == 2 and 'global' in name else 16,
-              'panel-framerate': rate, 'panel-clockrate': clock}
-    result, count = re.subn(r'timing@0(?=\s*\{)', f'timing@{index}', stock, count=1)
-    if count != 1:
-        fail(f'{name}: cannot locate the stock timing node')
-    for key, value in values.items():
-        pattern = rf'(qcom,mdss-dsi-{key}\s*=\s*<)\d+(>;)'
-        result, count = re.subn(pattern, lambda m: m[1] + str(value) + m[2], result)
-        if count != 1:
-            fail(f'{name}: expected one {key} setting')
-    if 'qcom,mdss-mdp-transfer-time-us' in result or 'qcom,mdss-dsi-transfer-time-pclk' in result:
-        fail(f'{name}: stock timing has unexpected transfer overrides')
-    opening = result.index('{') + 1
-    return (result[:opening] + f'\n\t\t\t\tqcom,mdss-mdp-transfer-time-us = <{transfer}>;'
-            + '\n\t\t\t\tqcom,mdss-dsi-transfer-time-pclk;' + result[opening:])
-
-def evo_phy(index):
-    return (f'\t\ttiming@{index}{{\n'
-            '\t\t\tqcom,mdss-dsi-panel-phy-timings = [00 24 0A 0A 26 24 0A\n'
-            '\t\t\t\t0A 06 02 04 00 1E 1A];\n'
-            '\t\t\tqcom,display-topology = <1 0 1>;\n'
-            '\t\t\tqcom,default-topology-index = <0>;\n\t\t};\n')
-
-def miuicx_mode(name, stock, index, with_transfer=True):
-    rate, clock = miuicx_rates[index]
-    command = re.search(r'qcom,mdss-dsi-on-command\s*=\s*\[(.*?)\]', stock, re.S)
-    if not command:
-        fail(f'{name}: missing stock panel-on commands')
-    command_text = re.sub(r'/\*.*?\*/|//[^\n]*', '', command[1], flags=re.S)
-    try:
-        command_bytes = bytes.fromhex(command_text)
-    except ValueError:
-        fail(f'{name}: invalid stock panel-on commands')
-    if hashlib.sha256(command_bytes).hexdigest() != evo_panels[name][1]:
-        fail(f'{name}: stock panel commands do not match the reviewed MIUICX panel')
-    result, count = re.subn(r'timing@0(?=\s*\{)', f'timing@{index}', stock, count=1)
-    if count != 1:
-        fail(f'{name}: cannot locate stock timing')
-    values = {'h-front-porch': 22, 'h-back-porch': 16, 'h-pulse-width': 16,
-              'v-front-porch': 16, 'v-back-porch': 22, 'v-pulse-width': 16,
-              'panel-framerate': rate, 'panel-clockrate': clock}
-    for key, value in values.items():
-        pattern = rf'(qcom,mdss-dsi-{key}\s*=\s*<)\d+(>;)'
-        result, count = re.subn(pattern, lambda m: m[1] + str(value) + m[2], result)
-        if count != 1:
-            fail(f'{name}: expected one {key} setting')
-    command = re.search(r'(qcom,mdss-dsi-on-command\s*=\s*\[)(.*?)(\];)', result, re.S)
-    old = 'E9 11 55 A6 75 A3 B9 A1 4A 00 1A B8'
-    new = 'E9 11 55 A6 75 A3 A9 A1 4A 00 1A B8'
-    if not command or command[2].count(old) != 1:
-        fail(f'{name}: cannot safely install MIUICX high-mode panel command')
-    result = result[:command.start(2)] + command[2].replace(old, new, 1) + result[command.end(2):]
-    if len(bytes.fromhex(miuicx_switch[name])) != 77 or 'qcom,mdss-dsi-timing-switch-command' in result:
-        fail(f'{name}: unexpected timing-switch command layout')
-    end = result.rfind('\t\t\t};')
-    if end < 0:
-        fail(f'{name}: cannot locate timing node end')
-    transfer = (f'\t\t\t\tqcom,mdss-mdp-transfer-time-us = <{miuicx_transfers[index]}>;\n'
-                if with_transfer else '')
-    addition = (transfer + '\t\t\t\tqcom,mdss-dsi-timing-switch-command = ['
-                + miuicx_switch[name] + '];\n'
-                '\t\t\t\tqcom,mdss-dsi-timing-switch-command-state = "dsi_lp_mode";\n')
-    return result[:end] + addition + result[end:]
-
-def miuicx_phy(stock, index):
-    result, count = re.subn(r'timing@0(?=\s*\{)', f'timing@{index}', stock, count=1)
-    if count != 1:
-        fail('cannot clone stock SS PHY timing')
-    return result
-
-# Marker written by the removed --oc-display overclock; still used to clean it up.
-oc_marker = '/* OCD 90 Hz EA8076 mode from bool-x_xiaomi_raphael branch ocd. */'
-
-# Stage every change before writing; custom changes to previously installed
-# mode nodes abort instead of being silently removed.
-changes = {}
-central_path = root / base / 'sm8150-sde-display.dtsi'
-central_original = central_path.read_text()
-central = central_original
-for name, label in panels.items():
-    path = root / base / name
-    original = path.read_text()
-    updated = original
-    miuicx_installed = miuicx_marker in original or miuicx_previous_marker in original
-    if miuicx_installed:
-        installed_marker = (miuicx_previous_marker if miuicx_previous_marker in original
-                            else miuicx_marker)
-        installed_indices = (1, 2, 3, 4) if installed_marker == miuicx_previous_marker else miuicx_enabled
-        if name not in evo_panels or original.count(installed_marker) != 1 or (miuicx_marker in original and miuicx_previous_marker in original):
-            fail(f'{name}: unexpected MIUICX mode marker')
-        ids = re.findall(r'^\t{3}timing@(\d+)\s*\{', updated, re.M)
-        if ids not in (['0'] + [str(i) for i in installed_indices],
-                       [str(i) for i in reversed(installed_indices)] + ['0']):
-            fail(f'{name}: unexpected MIUICX timing nodes')
-        stock = node(updated, r'^\t{3}timing@0\s*\{')[2]
-        for index in installed_indices:
-            left, right, content = node(updated, rf'^\t{{3}}timing@{index}\s*\{{')
-            if content not in (miuicx_mode(name, stock, index),
-                               miuicx_mode(name, stock, index, False)):
-                fail(f'{name}: MIUICX timing@{index} has local modifications')
-            updated = updated[:left] + updated[right:]
-        marker_line = '\t\t\t' + installed_marker + '\n'
-        preferred = '\t\tqcom,mdss-dsi-preferred-refresh-rate = <60>;\n'
-        if updated.count(marker_line) != 1 or updated.count(preferred) != 1:
-            fail(f'{name}: unexpected MIUICX marker or preference')
-        updated = updated.replace(marker_line, '', 1).replace(preferred, '', 1)
-    evo_installed = evo_marker in original or evo_legacy_marker in original
-    existing_evo_marker = evo_marker if evo_marker in original else evo_legacy_marker
-    evo_indices = (1, 2, 3) if existing_evo_marker == evo_marker else (2, 3)
-    if evo_installed:
-        if name not in evo_panels or original.count(existing_evo_marker) != 1 or (evo_marker in original and evo_legacy_marker in original):
-            fail(f'{name}: unexpected Evolution-X mode marker')
-        ids = re.findall(r'^\t{3}timing@(\d+)\s*\{', updated, re.M)
-        if ids != ['0'] + [str(i) for i in evo_indices]:
-            fail(f'{name}: unexpected Evolution-X timing nodes')
-        stock = node(updated, r'^\t{3}timing@0\s*\{')[2]
-        for index in evo_indices:
-            left, right, content = node(updated, rf'^\t{{3}}timing@{index}\s*\{{')
-            if content != evo_mode(name, stock, index):
-                fail(f'{name}: Evolution-X timing@{index} has local modifications')
-            updated = updated[:left] + updated[right:]
-        line = '\t\t\t' + existing_evo_marker + '\n'
-        if updated.count(line) != 1:
-            fail(f'{name}: unexpected Evolution-X marker layout')
-        updated = updated.replace(line, '', 1)
-        preferred = '\t\tqcom,mdss-dsi-preferred-refresh-rate = <60>;\n'
-        if updated.count(preferred) != 1:
-            fail(f'{name}: unexpected Evolution-X preferred-rate setting')
-        updated = updated.replace(preferred, '', 1)
-    # Remove the 90 Hz node left behind by the removed --oc-display option.
-    oc_installed = oc_marker in updated
-    if oc_installed:
-        marker_line = '\t\t\t' + oc_marker + '\n'
-        if updated.count(marker_line) != 1:
-            fail(f'{name}: unexpected OCD overclock marker')
-        ids = re.findall(r'^\t{3}timing@(\d+)\s*\{', updated, re.M)
-        if ids != ['0', '1']:
-            fail(f'{name}: unexpected OCD timing nodes; preserve local changes and resolve manually')
-        left, right, content = node(updated, r'^\t{3}timing@1\s*\{')
-        if not re.search(r'qcom,mdss-dsi-panel-framerate\s*=\s*<90>;', content):
-            fail(f'{name}: OCD timing@1 is not the 90 Hz mode; preserve local changes and resolve manually')
-        updated = updated[:left] + updated[right:]
-        updated = updated.replace(marker_line, '', 1)
-    installed = marker in original
-    mode_ids = re.findall(r'^\t{3}timing@(\d+)\s*\{', updated, re.M)
-    if installed:
-        if original.count(marker) != 1:
-            fail(f'{name}: multiple installed high-refresh markers')
-        if mode_ids != ['0', '1', '3']:
-            fail(f'{name}: unexpected display timing nodes; preserve local changes and resolve manually')
-        for index in (1, 3):
-            start, end, content = node(updated, rf'^\t{{3}}timing@{index}\s*\{{')
-            if digest(content) != mode_hashes[index]:
-                fail(f'{name}: installed timing@{index} was modified; preserve it and resolve manually')
-            updated = updated[:start] + updated[end:]
-        marker_line = '\t\t\t' + marker + '\n'
-        if updated.count(marker_line) != 1:
-            fail(f'{name}: unexpected high-refresh marker layout')
-        updated = updated.replace(marker_line, '', 1)
-        preference = re.compile(r'^\t\tqcom,mdss-dsi-preferred-refresh-rate = <(?:60|75)>;\n', re.M)
-        if 'qcom,mdss-dsi-preferred-refresh-rate' in updated:
-            updated, count = preference.subn('', updated)
-            if count != 1 or 'qcom,mdss-dsi-preferred-refresh-rate' in updated:
-                fail(f'{name}: custom preferred-refresh property; preserve it and resolve manually')
-    elif mode_ids != ['0']:
-        fail(f'{name}: unrecognized display timing nodes; preserve local changes and resolve manually')
-    changes[path] = (original, updated)
-
-    start, end, parent = node(central, rf'^&{label}\s*\{{')
-    if miuicx_installed:
-        ids = re.findall(r'^\t{2}timing@(\d+)\s*\{', parent, re.M)
-        if ids not in (['0'] + [str(i) for i in installed_indices],
-                       [str(i) for i in reversed(installed_indices)] + ['0']):
-            fail(f'{label}: unexpected MIUICX PHY timing nodes')
-        stock_phy = node(parent, r'^\t{2}timing@0\s*\{')[2]
-        for index in installed_indices:
-            left, right, content = node(parent, rf'^\t{{2}}timing@{index}\s*\{{')
-            if content != miuicx_phy(stock_phy, index):
-                fail(f'{label}: MIUICX PHY timing@{index} has local modifications')
-            parent = parent[:left] + parent[right:]
-    if evo_installed:
-        ids = re.findall(r'^\t{2}timing@(\d+)\s*\{', parent, re.M)
-        if ids != ['0'] + [str(i) for i in evo_indices]:
-            fail(f'{label}: unexpected Evolution-X PHY timing nodes')
-        for index in evo_indices:
-            left, right, content = node(parent, rf'^\t{{2}}timing@{index}\s*\{{')
-            if content != evo_phy(index):
-                fail(f'{label}: Evolution-X PHY timing@{index} has local modifications')
-            parent = parent[:left] + parent[right:]
-    if oc_installed:
-        ids = re.findall(r'^\t{2}timing@(\d+)\s*\{', parent, re.M)
-        if ids != ['0', '1']:
-            fail(f'{label}: unexpected OCD PHY timing nodes')
-        left, right, content = node(parent, r'^\t{2}timing@1\s*\{')
-        if '06 02 04' not in content or '06 03 04' in content:
-            fail(f'{label}: OCD PHY timing@1 has local modifications')
-        parent = parent[:left] + parent[right:]
-    parent_ids = re.findall(r'^\t{2}timing@(\d+)\s*\{', parent, re.M)
-    if any(index not in ('0', '1', '3') for index in parent_ids):
-        fail(f'{label}: unrecognized PHY timing nodes; preserve local changes and resolve manually')
-    if not installed and parent_ids != ['0']:
-        fail(f'{label}: PHY timing nodes lack the installed high-refresh marker; preserve local changes and resolve manually')
-    for index in (1, 3):
-        pattern = rf'^\t{{2}}timing@{index}\s*\{{'
-        if not re.search(pattern, parent, re.M):
-            continue
-        left, right, content = node(parent, pattern)
-        if digest(content) != phy_hashes[index]:
-            fail(f'{label}: installed PHY timing@{index} was modified; preserve it and resolve manually')
-        parent = parent[:left] + parent[right:]
-    central = central[:start] + parent + central[end:]
-changes[central_path] = (central_original, central)
-
-# The high-refresh port rewrote a continuous-splash preference block in two
-# successive versions. Reverse either exact reviewed variant before the rest.
-encoder_rules = driver_edits['drivers/gpu/drm/msm/sde/sde_encoder.c']
-legacy = next((new for old, new in encoder_rules if 'has_preferred_75' in new), None)
-if legacy is None:
-    fail('missing embedded splash migration rule')
-general = (legacy.replace('an explicit 75 Hz DSI preference', 'the DSI preferred mode')
-    .replace('has_preferred_75', 'has_preferred_mode')
-    .replace('candidate->vrefresh == 75 &&',
-             'candidate->hdisplay == drm_mode->hdisplay &&\n'
-             '\t\t\t    candidate->vdisplay == drm_mode->vdisplay &&'))
-if general == legacy or 'candidate->vrefresh == 75' in general:
-    fail('unexpected embedded splash migration rule')
-
-for name, replacements in driver_edits.items():
-    path = root / name
-    # The MIUICX port does not edit this binding. Some branch 17 trees use a
-    # different copy, so leave their documentation untouched.
-    if name == 'Documentation/devicetree/bindings/drm/msm/mdss-dsi-panel.txt':
-        continue
-    original = path.read_text()
-    updated = original
-    if name == 'drivers/gpu/drm/msm/sde/sde_encoder.c':
-        if general in updated:
-            if updated.count(general) != 1:
-                fail(f'{name}: multiple splash preference blocks')
-            updated = updated.replace(general, legacy, 1)
-    # Reverse in the opposite order: a few original edits overlapped.
-    for old, new in reversed(replacements):
-        if updated.count(new) == 1:
-            updated = updated.replace(new, old, 1)
-        elif updated.count(new) > 1:
-            fail(f'{name}: multiple copies of a high-refresh edit')
-        elif old not in updated:
-            fail(f'{name}: cannot safely reverse high-refresh edit; preserve local changes and resolve manually')
-    # Keep the independent bool-return correctness fix for failed mode lookups.
-    if name == 'drivers/gpu/drm/msm/dsi-staging/dsi_drm.c':
-        before = ('\trc = dsi_display_find_mode(display, &dsi_mode, &panel_dsi_mode);\n'
-                  '\tif (rc)\n\t\treturn rc;\n')
-        after = ('\trc = dsi_display_find_mode(display, &dsi_mode, &panel_dsi_mode);\n'
-                 '\tif (rc)\n\t\treturn false;\n')
-        if updated.count(before) == 1:
-            updated = updated.replace(before, after, 1)
-        elif updated.count(after) != 1:
-            fail(f'{name}: unexpected mode-lookup error handling')
-    changes[path] = (original, updated)
-
-# Remove mode-order edits left by earlier overclock builds.
-display_path = root / 'drivers/gpu/drm/msm/dsi-staging/dsi_display.c'
-display_original = display_path.read_text()
-display_updated = display_original
-mode_order_old = ('\t\t_dsi_display_populate_bit_clks(display, start, end, &array_idx);\n'
-                  '\t}\n\nexit:\n\t*out_modes = display->modes;\n')
-mode_order_new = '''\t\t_dsi_display_populate_bit_clks(display, start, end, &array_idx);
-\t}
-
-\t/* The MIUICX Raphael DTBO overlay prepends timing@2 and @1.
-\t * Sort only its exact 60/69/75 Hz mode set, so index zero remains
-\t * the stock 60 Hz mode regardless of the overlay implementation.
-\t */
-\t{
-\t\tconst u32 rates[] = { 60, 69, 75 };
-\t\tstruct dsi_display_mode temp;
-\t\tu32 preferred_rate;
-\t\tu32 j;
-
-\t\tif (!display->panel->utils.read_u32(display->panel->utils.data,
-\t\t\t\t"qcom,mdss-dsi-preferred-refresh-rate",
-\t\t\t\t&preferred_rate) && preferred_rate == 60) {
-\t\t\tif (array_idx != ARRAY_SIZE(rates)) {
-\t\t\t\trc = -EINVAL;
-\t\t\t\tgoto error;
-\t\t\t}
-\t\t\tfor (i = 0; i < (int)ARRAY_SIZE(rates); i++) {
-\t\t\t\tfor (j = i; j < ARRAY_SIZE(rates); j++)
-\t\t\t\t\tif (display->modes[j].timing.refresh_rate ==
-\t\t\t\t\t\t\trates[i])
-\t\t\t\t\t\tbreak;
-\t\t\t\tif (j == ARRAY_SIZE(rates)) {
-\t\t\t\t\trc = -EINVAL;
-\t\t\t\t\tgoto error;
-\t\t\t\t}
-\t\t\t\ttemp = display->modes[i];
-\t\t\t\tdisplay->modes[i] = display->modes[j];
-\t\t\t\tdisplay->modes[j] = temp;
-\t\t\t}
-\t\t}
-\t}
-
-exit:
-\t*out_modes = display->modes;
-'''
-mode_order_previous = (mode_order_new
-    .replace('The MIUICX Raphael DTBO overlay prepends timing@2 and @1.',
-             'The MIUICX Raphael DTBO overlay prepends timing@4 through @1.')
-    .replace('60/69/75 Hz mode set', '60/69/75/81/90 Hz mode set')
-    .replace('{ 60, 69, 75 }', '{ 60, 69, 75, 81, 90 }'))
-mode_order_legacy = (mode_order_previous
-    .replace('The MIUICX Raphael DTBO overlay prepends timing@4 through @1.',
-             'The reviewed Raphael DTBO overlay prepends timing@3, @2 and @1.')
-    .replace('60/69/75/81/90 Hz mode set', '60/72/81/90 Hz mode set')
-    .replace('{ 60, 69, 75, 81, 90 }', '{ 60, 72, 81, 90 }'))
-for installed_order in (mode_order_new, mode_order_previous, mode_order_legacy):
-    if display_updated.count(installed_order) == 1:
-        display_updated = display_updated.replace(installed_order, mode_order_old, 1)
-    elif display_updated.count(installed_order) > 1:
-        fail('multiple installed display mode order blocks')
-if display_updated.count(mode_order_old) != 1:
-    fail('cannot safely locate display mode order code')
-# An unsuccessful parse must not leave a freed mode cache for the next probe.
-cache_error_old = '\nerror:\n\tif (rc)\n\t\tkfree(display->modes);\n\n\tmutex_unlock(&display->display_lock);\n'
-cache_error_new = '\nerror:\n\tif (rc) {\n\t\tkfree(display->modes);\n\t\tdisplay->modes = NULL;\n\t}\n\n\tmutex_unlock(&display->display_lock);\n'
-if display_updated.count(cache_error_old) == 1:
-    display_updated = display_updated.replace(cache_error_old, cache_error_new, 1)
-elif display_updated.count(cache_error_new) != 1:
-    fail('cannot safely fix the display mode cache error path')
-changes[display_path] = (display_original, display_updated)
-
-for path, (original, updated) in changes.items():
-    if original != updated:
-        path.write_text(updated)
-output.mkdir(parents=True, exist_ok=True)
-report = output / 'display-modes.txt'
-report.write_text('Raphael display setup: stock 60 Hz panel timings.\n'
-                  'Rebuild the kernel and device tree before packaging.\n')
-print('Raphael display: stock 60 Hz timings prepared.')
-print(f'Display source report: {report}')
-PYDISPLAY
-}
-
-setup_raphael_display
 
 setup_rtl88x2bu() (
     local driver="$ROOT/drivers/net/wireless/realtek/rtl88x2bu"
@@ -1515,12 +1172,21 @@ else
 fi
 
 
+if (( WITH_OC_DISPLAY )); then
+    verify_oc_display_sources
+fi
 if (( $# )); then
     make -j"$JOBS" "${args[@]}" "$@"
+elif (( WITH_OC_DISPLAY )); then
+    make -j"$JOBS" "${args[@]}" all Image.gz dtbs
 else
     make -j"$JOBS" "${args[@]}" all Image.gz
 fi
 printf '\nMake completed successfully. Artifacts are under %s\n' "$OUT_DIR"
+if (( WITH_OC_DISPLAY )); then
+    printf '\nPackaging the 60/69/72/81/90 Hz display DTBO\n'
+    pack_oc_dtbo_image
+fi
 if [[ -n ${STOCK_BOOT_IMG:-} ]]; then
     printf '\nPackaging boot.img using template: %s\n' "$STOCK_BOOT_IMG"
     make_boot_image
@@ -1528,21 +1194,18 @@ else
     printf '\nboot.img was not created because STOCK_BOOT_IMG was not supplied.\n'
     printf 'To package the compiled kernel, run:\n'
     printf '  STOCK_BOOT_IMG=/absolute/path/to/working/boot.img ./build.sh --bootimg-only\n'
-fi
-if (( WITH_OC_DISPLAY )); then
-    pack_oc_dtbo_image
-elif [[ -n ${STOCK_DTBO_IMG:-} ]]; then
-    pack_dtbo_image
-else
     printf '\nDisplay device tree: %s/arch/arm64/boot/dts/qcom/raphael-sm8150-overlay.dtbo\n' "$OUT_DIR"
-    if [[ -e $OUT_DIR/dtbo.img ]]; then
-        dtbo_hash=$(sha256sum "$OUT_DIR/dtbo.img")
-        if [[ ${dtbo_hash%% *} == 2a7fedf9e370b421227879ae1ca035b30028bbdbf7f7265b553770d3c60a9674 ]]; then
-            printf 'Existing %s/dtbo.img matches the verified original ROM DTBO.\n' "$OUT_DIR"
-        else
-            printf 'Warning: existing %s/dtbo.img was not regenerated and may contain old display changes.\n' "$OUT_DIR"
+    if (( WITH_OC_DISPLAY )); then
+        printf 'Display DTBO: %s/dtbo.img carries the 60/69/72/81/90 Hz EA8076 timings.\n' "$OUT_DIR"
+    else
+        if [[ -e $OUT_DIR/dtbo.img ]]; then
+            dtbo_hash=$(sha256sum "$OUT_DIR/dtbo.img")
+            if [[ ${dtbo_hash%% *} == 2a7fedf9e370b421227879ae1ca035b30028bbdbf7f7265b553770d3c60a9674 ]]; then
+                printf 'Existing %s/dtbo.img matches the verified original ROM DTBO.\n' "$OUT_DIR"
+            else
+                printf 'Warning: existing %s/dtbo.img was not regenerated and may contain old display changes.\n' "$OUT_DIR"
+            fi
         fi
+        printf 'To copy the original stock DTBO, set STOCK_DTBO_IMG and run ./build.sh --dtbo-only.\n'
     fi
-    printf 'To copy the original stock DTBO, set STOCK_DTBO_IMG and run ./build.sh --dtbo-only.\n'
-    printf 'To package the reviewed 60/75/90 Hz display DTBO, run ./build.sh --dtbo-only --oc-display.\n'
 fi
