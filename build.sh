@@ -63,7 +63,8 @@ Without --oc-display it copies that image byte for byte. With --oc-display the
 compiled raphael-sm8150-overlay.dtbo replaces the matching Raphael entry and the
 result is written to out/dtbo.img; the entry is detected from its compatible,
 board-id and model, and DTBO_INDEX overrides the detection when needed.
-DTBO signing/AVB verification, if the ROM enforces it, is separate.
+With --oc-display an AVB footer on the template is dropped and out/dtbo.img is
+unsigned, so the ROM must accept an unsigned DTBO or the image must be re-signed.
 EOF
 }
 
@@ -360,6 +361,27 @@ def parse_table(image):
             'version': version, 'entries': entries, 'end_entries': end_entries}
 
 
+def strip_avb_footer(image):
+    """Drop an AVB footer and its vbmeta blob so the DTBO table can be rebuilt.
+
+    The footer lives in the last 64 bytes and records the original, pre-signing
+    image length. The ROM template keeps its signature only until we repack it:
+    the result is unsigned, so the ROM must accept that (verification disabled)
+    or re-sign it afterwards.
+    """
+    if len(image) < 64 or image[-64:-60] != b'AVBf':
+        return image, None
+    version_major, version_minor, original_size, vbmeta_offset, vbmeta_size = \
+        struct.unpack_from('>IIQQQ', image, len(image) - 60)
+    require(version_major in (0, 1), 'unsupported AVB footer version')
+    require(0 < original_size <= len(image),
+            'AVB footer records an invalid original image size')
+    require(vbmeta_offset + vbmeta_size <= len(image),
+            'AVB footer records a vbmeta blob outside the image')
+    return image[:original_size], (original_size, len(image),
+                                    vbmeta_offset, vbmeta_size)
+
+
 def decode(image, entry, index):
     _, length, offset, method = entry
     payload = image[offset:offset + length]
@@ -453,6 +475,7 @@ def main(arguments):
     compiled = identity(parse_fdt(blob, 'compiled Raphael overlay'))
     require(compiled[0] is not None and compiled[1] is not None,
             'compiled overlay has no compatible/board-id identity')
+    image, avb_footer = strip_avb_footer(image)
     table = parse_table(image)
     roots = [decode(image, entry, index)[1]
              for index, entry in enumerate(table['entries'])]
@@ -470,15 +493,6 @@ def main(arguments):
         require(selected, 'no DTBO entry matches the compiled overlay; set DTBO_INDEX')
         require(len(selected) == 1, 'DTBO entries ' + ','.join(map(str, selected)) +
                 ' match the compiled overlay; set DTBO_INDEX')
-    if b'AVBf' in image[-64:]:
-        raise ValueError('STOCK_DTBO_IMG is AVB-signed; rebuild against an unsigned '
-                         'DTBO template or re-sign the rebuilt image')
-    # The reviewed ROM DTBO is verified above and never AVB-signed; any AVB magic
-    # after that check means the template was replaced, so re-verify against the
-    # pinned original before repacking.
-    if sha256(stock) != STOCK_HASH:
-        raise ValueError('STOCK_DTBO_IMG is AVB-signed; rebuild against an unsigned '
-                         'DTBO template or re-sign the rebuilt image')
     result = repack(image, blob, set(selected), table)
     check = parse_table(result)
     for index in sorted(selected):
@@ -498,7 +512,13 @@ def main(arguments):
     print(f'DTBO image created: {destination} '
           f'(replaced entries {",".join(map(str, sorted(selected)))})')
     print('The compiled Raphael overlay replaced the stock display device tree.')
-    print('DTBO signing/AVB verification, if the ROM enforces it, is separate.')
+    if avb_footer:
+        original_size, signed_size, vbmeta_offset, vbmeta_size = avb_footer
+        print(f'Dropped the AVB footer: signed template was {signed_size} bytes, '
+              f'DTBO table is {original_size} bytes, vbmeta at {vbmeta_offset} '
+              f'({vbmeta_size} bytes).')
+        print('The rebuilt image is unsigned; flash it only on a ROM that does not '
+              'verify this DTBO (vbmeta verification disabled), or re-sign it now.')
 
 
 if __name__ == '__main__':
