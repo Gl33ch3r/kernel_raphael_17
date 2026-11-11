@@ -359,8 +359,417 @@ for tool in make gcc g++ bc bison flex python3 perl pkg-config gzip; do
     command -v "$tool" >/dev/null 2>&1 || die "Missing host dependency: $tool (see ./build.sh --help)."
 done
 
+setup_raphael_display() {
     # Remove the previously embedded high-refresh port, if installed, without
     # replacing unrelated source files or requiring network/Git history.
+    python3 - "$ROOT" "$OUT_DIR" <<'PYDISPLAY'
+from pathlib import Path
+import hashlib, json, re, sys
+
+root, output = map(Path, sys.argv[1:3])
+base = Path('arch/arm64/boot/dts/qcom')
+panels = json.loads(r'''{"dsi-panel-ss-fhd-ea8076-cmd.dtsi":"dsi_ss_fhd_ea8076_cmd","dsi-panel-ss-fhd-ea8076-global-cmd.dtsi":"dsi_ss_fhd_ea8076_global_cmd","dsi-panel-samsung-fhd-ea8076-f1-cmd.dtsi":"dsi_samsung_fhd_ea8076_f1_cmd","dsi-panel-samsung-fhd-ea8076-f1mp-cmd.dtsi":"dsi_samsung_fhd_ea8076_f1mp_cmd","dsi-panel-samsung-fhd-ea8076-f1p2-cmd.dtsi":"dsi_samsung_fhd_ea8076_f1p2_cmd","dsi-panel-samsung-fhd-ea8076-f1p2-2-cmd.dtsi":"dsi_samsung_fhd_ea8076_f1p2_2_cmd"}''')
+driver_edits = json.loads(r'''{"drivers/gpu/drm/msm/dsi-staging/dsi_panel.c":[["\ttiming = &mode->timing;\n\n\tif (panel_mode == DSI_OP_CMD_MODE) {\n","\ttiming = &mode->timing;\n\n\t/* Opt-in timings derive the command-mode pixel clock from the transfer\n\t * budget directly. Dividing by transfer time before multiplication would\n\t * truncate to a whole Hz and undershoot the matching DSI link clock.\n\t * Existing timings keep the original calculation below.\n\t */\n\tif (utils->read_bool(utils->data,\n\t\t\t\"qcom,mdss-dsi-transfer-time-pclk\")) {\n\t\tif (panel_mode != DSI_OP_CMD_MODE || timing->dsc_enabled ||\n\t\t    !timing->refresh_rate || !timing->clk_rate_hz ||\n\t\t    !priv_info->mdp_transfer_time_us ||\n\t\t    priv_info->mdp_transfer_time_us >=\n\t\t\tTICKS_IN_MICRO_SECOND / timing->refresh_rate) {\n\t\t\tpr_err(\"invalid clock-derived command-mode transfer budget\\n\");\n\t\t\treturn -EINVAL;\n\t\t}\n\t\tpixel_clk_khz = (u64)DSI_H_ACTIVE_DSC(timing) *\n\t\t\ttiming->v_active * 1000;\n\t\tdo_div(pixel_clk_khz, priv_info->mdp_transfer_time_us);\n\t\tmode->pixel_clk_khz = pixel_clk_khz;\n\t\treturn 0;\n\t}\n\n\tif (panel_mode == DSI_OP_CMD_MODE) {\n"]],"drivers/gpu/drm/msm/dsi-staging/dsi_drm.c":[["\t\t/* No DMS/VRR when drm pipeline is changing */\n\t\tif (!drm_mode_equal(&cur_mode, adjusted_mode) &&\n","\t\t/* Without panel timing-switch commands, use a complete modeset so\n\t\t * the destination mode's full on/off command sequences are sent.\n\t\t * No DMS/VRR when the DRM pipeline is changing.\n\t\t */\n\t\tif (display->panel->dms_mode != DSI_DMS_MODE_DISABLED &&\n\t\t\t!drm_mode_equal(&cur_mode, adjusted_mode) &&\n"],["static void dsi_drm_update_dtd(struct edid *edid,\n\t\tstruct dsi_display_mode *modes, u32 modes_count)\n","static void dsi_drm_update_dtd(struct edid *edid,\n\t\tstruct dsi_display_mode *modes, u32 modes_count,\n\t\tu32 preferred_index, bool nominal_preferred)\n"],["\t\tstruct dsi_display_mode *mode = &modes[i];\n\t\tstruct dsi_mode_info *timing = &mode->timing;\n","\t\tu32 mode_index = i == 0 ? preferred_index :\n\t\t\t(i <= preferred_index ? i - 1 : i);\n\t\tstruct dsi_display_mode *mode = &modes[mode_index];\n\t\tstruct dsi_mode_info *timing = &mode->timing;\n"],["\t\tdtd->pixel_clock = mode->pixel_clk_khz / 10;\n","\t\t/* A command-mode transfer clock is not its nominal scan clock. */\n\t\tif (i == 0 && nominal_preferred)\n\t\t\tdtd->pixel_clock = div_u64((u64)(timing->h_active + h_blank) *\n\t\t\t\t(timing->v_active + v_blank) * timing->refresh_rate +\n\t\t\t\t5000, 10000);\n\t\telse\n\t\t\tdtd->pixel_clock = mode->pixel_clk_khz / 10;\n"],["\tu32 count = 0, edid_size;\n\tstruct dsi_display_mode *modes = NULL;\n","\tu32 count = 0, edid_size, preferred_index = 0, preferred_rate = 0;\n\tbool nominal_preferred = false;\n\tstruct dsi_display_mode *modes = NULL;\n"],["\tfor (i = 0; i < count; i++) {\n\t\tstruct drm_display_mode *m;\n","\t/* Keep source mode order and bootloader timing indices unchanged. */\n\tif (display->panel &&\n\t    !display->panel->utils.read_u32(display->panel->utils.data,\n\t\t\t\"qcom,mdss-dsi-preferred-refresh-rate\",\n\t\t\t&preferred_rate)) {\n\t\tfor (i = 0; i < count; i++) {\n\t\t\tif (modes[i].timing.refresh_rate == preferred_rate) {\n\t\t\t\tpreferred_index = i;\n\t\t\t\tnominal_preferred = true;\n\t\t\t\tbreak;\n\t\t\t}\n\t\t}\n\t}\n\n\tfor (i = 0; i < count; i++) {\n\t\tstruct drm_display_mode *m;\n"],["\t\t/* set the first mode in list as preferred */\n\t\tif (i == 0)\n","\t\t/* Prefer the requested rate, or the first mode if unspecified. */\n\t\tif (i == preferred_index)\n"],["\tdsi_drm_update_dtd(&edid, modes, count);\n","\tdsi_drm_update_dtd(&edid, modes, count, preferred_index, nominal_preferred);\n"]],"Documentation/devicetree/bindings/drm/msm/mdss-dsi-panel.txt":[["- qcom,mdss-dsi-on-command-state:","- qcom,mdss-dsi-transfer-time-pclk: Boolean on a command-mode timing node.\n\t\t\t\t\tCalculate pixel clock directly from active pixels and\n\t\t\t\t\tqcom,mdss-mdp-transfer-time-us, avoiding whole-Hz\n\t\t\t\t\ttruncation. Requires an explicit nonzero panel clock,\n\t\t\t\t\ta positive transfer time shorter than one frame,\n\t\t\t\t\tand an uncompressed command-mode timing.\n\t\t\t\t\tAbsent: retain the existing pixel-clock calculation.\n- qcom,mdss-dsi-on-command-state:"],["- qcom,mdss-dsi-transfer-time-pclk: Boolean on a command-mode timing node.\n","- qcom,mdss-dsi-preferred-refresh-rate: Preferred display mode refresh rate, in Hz.\n\t\t\t\t\tIf unavailable, the first timing remains preferred.\n- qcom,mdss-dsi-transfer-time-pclk: Boolean on a command-mode timing node.\n"]],"drivers/gpu/drm/msm/sde/sde_encoder.c":[["void sde_encoder_kickoff(struct drm_encoder *drm_enc, bool is_error)\n{\n\tstruct sde_encoder_virt *sde_enc;\n","void sde_encoder_kickoff(struct drm_encoder *drm_enc, bool is_error)\n{\n\tstatic bool first_primary_dsi_kickoff = true;\n\tstruct sde_encoder_virt *sde_enc;\n"],["\t/* allow phys encs to handle any post-kickoff business */\n\tfor (i = 0; i < sde_enc->num_phys_encs; i++) {\n\t\tphys = sde_enc->phys_encs[i];\n\t\tif (phys && phys->ops.handle_post_kickoff)\n\t\t\tphys->ops.handle_post_kickoff(phys);\n\t}\n\n\tif (sde_enc->disp_info.intf_type == DRM_MODE_CONNECTOR_DSI &&\n","\t/* allow phys encs to handle any post-kickoff business */\n\tfor (i = 0; i < sde_enc->num_phys_encs; i++) {\n\t\tphys = sde_enc->phys_encs[i];\n\t\tif (phys && phys->ops.handle_post_kickoff)\n\t\t\tphys->ops.handle_post_kickoff(phys);\n\t}\n\n\t/* The bootloader initializes the panel at 60 Hz. If userspace selects a\n\t * different mode for the first continuous-splash frame, request one\n\t * existing ESD-recovery cycle to send that mode's complete on sequence.\n\t * Consume the flag only for a valid primary DSI kickoff; a normal 60 Hz\n\t * boot does not reset, and DisplayPort/secondary kickoffs cannot claim it.\n\t */\n\tif (!is_error && sde_enc->disp_info.intf_type == DRM_MODE_CONNECTOR_DSI &&\n\t\t\tsde_enc->disp_info.is_primary && sde_enc->crtc &&\n\t\t\tsde_enc->cur_master && sde_enc->cur_master->connector &&\n\t\t\tcmpxchg(&first_primary_dsi_kickoff, true, false) &&\n\t\t\tsde_enc->crtc->mode.vrefresh != 60) {\n\t\tstruct sde_connector *conn = container_of(\n\t\t\tsde_enc->cur_master->connector, struct sde_connector, base);\n\t\tstruct drm_event event = {\n\t\t\t.type = DRM_EVENT_PANEL_DEAD,\n\t\t\t.length = sizeof(bool),\n\t\t};\n\n\t\tif (!conn->panel_dead) {\n\t\t\tconn->panel_dead = true;\n\t\t\tmsm_mode_object_event_notify(&conn->base.base,\n\t\t\t\tconn->base.dev, &event, (u8 *)&conn->panel_dead);\n\t\t}\n\t}\n\n\tif (sde_enc->disp_info.intf_type == DRM_MODE_CONNECTOR_DSI &&\n"],["\tdrm_set_preferred_mode(conn, drm_mode->hdisplay, drm_mode->vdisplay);\n","\t/* Keep an explicit 75 Hz DSI preference instead of marking all modes\n\t * with the same resolution preferred during continuous splash.\n\t */\n\tif (sde_enc->disp_info.intf_type == DRM_MODE_CONNECTOR_DSI &&\n\t    sde_enc->disp_info.is_primary) {\n\t\tstruct drm_display_mode *candidate;\n\t\tbool has_preferred_75 = false;\n\n\t\tlist_for_each_entry(candidate, &conn->probed_modes, head) {\n\t\t\tif (candidate->vrefresh == 75 &&\n\t\t\t    (candidate->type & DRM_MODE_TYPE_PREFERRED)) {\n\t\t\t\thas_preferred_75 = true;\n\t\t\t\tbreak;\n\t\t\t}\n\t\t}\n\t\tif (!has_preferred_75)\n\t\t\tdrm_set_preferred_mode(conn, drm_mode->hdisplay,\n\t\t\t\t\tdrm_mode->vdisplay);\n\t} else {\n\t\tdrm_set_preferred_mode(conn, drm_mode->hdisplay, drm_mode->vdisplay);\n\t}\n"]]}''')
+marker = '/* Bool-X 75/90 Hz modes; Copyright (C) 2021 XiaoMi, Inc.; GPL-2.0. */'
+evo_marker = '/* Evolution-X 72/81/90 Hz modes, commit 2c772d3fd9a042835a1f8489b91aa97b90be5b7f. */'
+evo_legacy_marker = '/* Evolution-X 81/90 Hz modes, commit 2c772d3fd9a042835a1f8489b91aa97b90be5b7f. */'
+evo_panels = {
+    'dsi-panel-ss-fhd-ea8076-cmd.dtsi': ('dsi_ss_fhd_ea8076_cmd', '545901f796377160d8a650db47d0afdbd1615d25ccc932345888c148575025e3'),
+    'dsi-panel-ss-fhd-ea8076-global-cmd.dtsi': ('dsi_ss_fhd_ea8076_global_cmd', '64cf89985b4cc7eed0799c1ee691290006c0acfb54fcaa5f89dc27e696eb85b3'),
+}
+miuicx_marker = '/* MIUICX R6.1 SS panel modes: 69/75 Hz. */'
+miuicx_previous_marker = '/* MIUICX R6.1 SS panel modes: 69/75/81/90 Hz. */'
+miuicx_rates = {1: (69, 1150000000), 2: (75, 1250000000),
+                3: (81, 1350000000), 4: (90, 1500000000)}
+miuicx_enabled = (1, 2)
+# DRM mode equality ignores the explicit vrefresh field. The MIUICX modes
+# share porch totals, so distinct transfer budgets give enabled modes distinct
+# pixel clocks and prevent Android from collapsing 75 Hz into 69 Hz.
+miuicx_transfers = {1: 13334, 2: 12196, 3: 11364, 4: 10205}
+miuicx_switch = {
+    'dsi-panel-ss-fhd-ea8076-cmd.dtsi':
+        '39 00 00 00 00 00 03 F0 5A 5A 39 00 00 00 00 00 03 FC 5A 5A '
+        '39 00 00 00 00 00 02 B0 23 39 00 00 00 00 00 02 D1 0F '
+        '39 00 00 00 00 00 0C E9 11 55 A6 75 A3 A9 A1 4A 00 8A 18 '
+        '39 00 00 00 00 00 03 F0 A5 A5 39 01 00 00 00 00 03 FC A5 A5',
+    'dsi-panel-ss-fhd-ea8076-global-cmd.dtsi':
+        '39 00 00 00 00 00 03 F0 5A 5A 39 00 00 00 00 00 03 FC 5A 5A '
+        '39 00 00 00 00 00 02 B0 23 39 00 00 00 00 00 02 D1 11 '
+        '39 00 00 00 00 00 0C E9 11 55 A6 75 A3 A9 A1 4A 00 8A 18 '
+        '39 00 00 00 00 00 03 F0 A5 A5 39 01 00 00 00 00 03 FC A5 A5',
+}
+mode_hashes = {
+    1: 'a393251def29ea7aaefb1343bf60d5b851f8bd92ea58258a86e74010dc8a9077',
+    3: '406e95d47e638eb55bd092148fe1a5570ab143c0454d34f95cac4c7105ad8a63',
+}
+phy_hashes = {
+    1: '97b7b4c39e37794d261cdaacd058f500060a7da56b90325843e33df55b46a2a6',
+    3: '11ecd9150f95ed00eee7d4bd1bcde852a118513c1cb6fa06a92503b4bb4565ae',
+}
+
+def fail(message):
+    sys.exit('Error: display cleanup: ' + message)
+
+def node(text, pattern):
+    matches = list(re.finditer(pattern, text, re.M))
+    if len(matches) != 1:
+        fail(f'expected one node matching {pattern!r}, found {len(matches)}')
+    match = matches[0]
+    opening = text.index('{', match.start())
+    depth = 0
+    for token in re.finditer(r'"(?:\\.|[^"\\])*"|/\*.*?\*/|//[^\n]*|[{}]', text[opening:], re.S):
+        value = token.group()
+        if value == '{':
+            depth += 1
+        elif value == '}':
+            depth -= 1
+            if depth == 0:
+                end = opening + token.end()
+                while end < len(text) and text[end] in '; \t':
+                    end += 1
+                if end < len(text) and text[end] == '\n':
+                    end += 1
+                return match.start(), end, text[match.start():end]
+    fail('unbalanced node braces')
+
+def digest(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+def evo_mode(name, stock, index):
+    # Build from the local 60 Hz node so this ROM's command sets and optional
+    # FOD/AOD features are preserved. Only Evolution-X timing values change.
+    command = re.search(r'qcom,mdss-dsi-on-command\s*=\s*\[(.*?)\]', stock, re.S)
+    if not command:
+        fail(f'{name}: missing stock panel-on commands')
+    command_text = re.sub(r'/\*.*?\*/|//[^\n]*', '', command.group(1), flags=re.S)
+    try:
+        command_hash = hashlib.sha256(bytes.fromhex(command_text)).hexdigest()
+    except ValueError:
+        fail(f'{name}: invalid stock panel-on commands')
+    if command_hash != evo_panels[name][1]:
+        fail(f'{name}: stock panel-on commands do not match the reviewed source')
+    rate, clock, transfer = {1: (72, 1320000000, 11486), 2: (81, 1485000000, 10210), 3: (90, 1650000000, 9189)}[index]
+    values = {'h-front-porch': 22, 'h-back-porch': 16, 'h-pulse-width': 16,
+              'v-back-porch': 16 if index == 2 and 'global' in name else 22,
+              'v-front-porch': 16, 'v-pulse-width': 12 if index == 2 and 'global' in name else 16,
+              'panel-framerate': rate, 'panel-clockrate': clock}
+    result, count = re.subn(r'timing@0(?=\s*\{)', f'timing@{index}', stock, count=1)
+    if count != 1:
+        fail(f'{name}: cannot locate the stock timing node')
+    for key, value in values.items():
+        pattern = rf'(qcom,mdss-dsi-{key}\s*=\s*<)\d+(>;)'
+        result, count = re.subn(pattern, lambda m: m[1] + str(value) + m[2], result)
+        if count != 1:
+            fail(f'{name}: expected one {key} setting')
+    if 'qcom,mdss-mdp-transfer-time-us' in result or 'qcom,mdss-dsi-transfer-time-pclk' in result:
+        fail(f'{name}: stock timing has unexpected transfer overrides')
+    opening = result.index('{') + 1
+    return (result[:opening] + f'\n\t\t\t\tqcom,mdss-mdp-transfer-time-us = <{transfer}>;'
+            + '\n\t\t\t\tqcom,mdss-dsi-transfer-time-pclk;' + result[opening:])
+
+def evo_phy(index):
+    return (f'\t\ttiming@{index}{{\n'
+            '\t\t\tqcom,mdss-dsi-panel-phy-timings = [00 24 0A 0A 26 24 0A\n'
+            '\t\t\t\t0A 06 02 04 00 1E 1A];\n'
+            '\t\t\tqcom,display-topology = <1 0 1>;\n'
+            '\t\t\tqcom,default-topology-index = <0>;\n\t\t};\n')
+
+def miuicx_mode(name, stock, index, with_transfer=True):
+    rate, clock = miuicx_rates[index]
+    command = re.search(r'qcom,mdss-dsi-on-command\s*=\s*\[(.*?)\]', stock, re.S)
+    if not command:
+        fail(f'{name}: missing stock panel-on commands')
+    command_text = re.sub(r'/\*.*?\*/|//[^\n]*', '', command[1], flags=re.S)
+    try:
+        command_bytes = bytes.fromhex(command_text)
+    except ValueError:
+        fail(f'{name}: invalid stock panel-on commands')
+    if hashlib.sha256(command_bytes).hexdigest() != evo_panels[name][1]:
+        fail(f'{name}: stock panel commands do not match the reviewed MIUICX panel')
+    result, count = re.subn(r'timing@0(?=\s*\{)', f'timing@{index}', stock, count=1)
+    if count != 1:
+        fail(f'{name}: cannot locate stock timing')
+    values = {'h-front-porch': 22, 'h-back-porch': 16, 'h-pulse-width': 16,
+              'v-front-porch': 16, 'v-back-porch': 22, 'v-pulse-width': 16,
+              'panel-framerate': rate, 'panel-clockrate': clock}
+    for key, value in values.items():
+        pattern = rf'(qcom,mdss-dsi-{key}\s*=\s*<)\d+(>;)'
+        result, count = re.subn(pattern, lambda m: m[1] + str(value) + m[2], result)
+        if count != 1:
+            fail(f'{name}: expected one {key} setting')
+    command = re.search(r'(qcom,mdss-dsi-on-command\s*=\s*\[)(.*?)(\];)', result, re.S)
+    old = 'E9 11 55 A6 75 A3 B9 A1 4A 00 1A B8'
+    new = 'E9 11 55 A6 75 A3 A9 A1 4A 00 1A B8'
+    if not command or command[2].count(old) != 1:
+        fail(f'{name}: cannot safely install MIUICX high-mode panel command')
+    result = result[:command.start(2)] + command[2].replace(old, new, 1) + result[command.end(2):]
+    if len(bytes.fromhex(miuicx_switch[name])) != 77 or 'qcom,mdss-dsi-timing-switch-command' in result:
+        fail(f'{name}: unexpected timing-switch command layout')
+    end = result.rfind('\t\t\t};')
+    if end < 0:
+        fail(f'{name}: cannot locate timing node end')
+    transfer = (f'\t\t\t\tqcom,mdss-mdp-transfer-time-us = <{miuicx_transfers[index]}>;\n'
+                if with_transfer else '')
+    addition = (transfer + '\t\t\t\tqcom,mdss-dsi-timing-switch-command = ['
+                + miuicx_switch[name] + '];\n'
+                '\t\t\t\tqcom,mdss-dsi-timing-switch-command-state = "dsi_lp_mode";\n')
+    return result[:end] + addition + result[end:]
+
+def miuicx_phy(stock, index):
+    result, count = re.subn(r'timing@0(?=\s*\{)', f'timing@{index}', stock, count=1)
+    if count != 1:
+        fail('cannot clone stock SS PHY timing')
+    return result
+
+# Stage every change before writing; custom changes to previously installed
+# mode nodes abort instead of being silently removed.
+changes = {}
+central_path = root / base / 'sm8150-sde-display.dtsi'
+central_original = central_path.read_text()
+central = central_original
+for name, label in panels.items():
+    path = root / base / name
+    original = path.read_text()
+    updated = original
+    miuicx_installed = miuicx_marker in original or miuicx_previous_marker in original
+    if miuicx_installed:
+        installed_marker = (miuicx_previous_marker if miuicx_previous_marker in original
+                            else miuicx_marker)
+        installed_indices = (1, 2, 3, 4) if installed_marker == miuicx_previous_marker else miuicx_enabled
+        if name not in evo_panels or original.count(installed_marker) != 1 or (miuicx_marker in original and miuicx_previous_marker in original):
+            fail(f'{name}: unexpected MIUICX mode marker')
+        ids = re.findall(r'^\t{3}timing@(\d+)\s*\{', updated, re.M)
+        if ids not in (['0'] + [str(i) for i in installed_indices],
+                       [str(i) for i in reversed(installed_indices)] + ['0']):
+            fail(f'{name}: unexpected MIUICX timing nodes')
+        stock = node(updated, r'^\t{3}timing@0\s*\{')[2]
+        for index in installed_indices:
+            left, right, content = node(updated, rf'^\t{{3}}timing@{index}\s*\{{')
+            if content not in (miuicx_mode(name, stock, index),
+                               miuicx_mode(name, stock, index, False)):
+                fail(f'{name}: MIUICX timing@{index} has local modifications')
+            updated = updated[:left] + updated[right:]
+        marker_line = '\t\t\t' + installed_marker + '\n'
+        preferred = '\t\tqcom,mdss-dsi-preferred-refresh-rate = <60>;\n'
+        if updated.count(marker_line) != 1 or updated.count(preferred) != 1:
+            fail(f'{name}: unexpected MIUICX marker or preference')
+        updated = updated.replace(marker_line, '', 1).replace(preferred, '', 1)
+    evo_installed = evo_marker in original or evo_legacy_marker in original
+    existing_evo_marker = evo_marker if evo_marker in original else evo_legacy_marker
+    evo_indices = (1, 2, 3) if existing_evo_marker == evo_marker else (2, 3)
+    if evo_installed:
+        if name not in evo_panels or original.count(existing_evo_marker) != 1 or (evo_marker in original and evo_legacy_marker in original):
+            fail(f'{name}: unexpected Evolution-X mode marker')
+        ids = re.findall(r'^\t{3}timing@(\d+)\s*\{', updated, re.M)
+        if ids != ['0'] + [str(i) for i in evo_indices]:
+            fail(f'{name}: unexpected Evolution-X timing nodes')
+        stock = node(updated, r'^\t{3}timing@0\s*\{')[2]
+        for index in evo_indices:
+            left, right, content = node(updated, rf'^\t{{3}}timing@{index}\s*\{{')
+            if content != evo_mode(name, stock, index):
+                fail(f'{name}: Evolution-X timing@{index} has local modifications')
+            updated = updated[:left] + updated[right:]
+        line = '\t\t\t' + existing_evo_marker + '\n'
+        if updated.count(line) != 1:
+            fail(f'{name}: unexpected Evolution-X marker layout')
+        updated = updated.replace(line, '', 1)
+        preferred = '\t\tqcom,mdss-dsi-preferred-refresh-rate = <60>;\n'
+        if updated.count(preferred) != 1:
+            fail(f'{name}: unexpected Evolution-X preferred-rate setting')
+        updated = updated.replace(preferred, '', 1)
+    installed = marker in original
+    mode_ids = re.findall(r'^\t{3}timing@(\d+)\s*\{', updated, re.M)
+    if installed:
+        if original.count(marker) != 1:
+            fail(f'{name}: multiple installed high-refresh markers')
+        if mode_ids != ['0', '1', '3']:
+            fail(f'{name}: unexpected display timing nodes; preserve local changes and resolve manually')
+        for index in (1, 3):
+            start, end, content = node(updated, rf'^\t{{3}}timing@{index}\s*\{{')
+            if digest(content) != mode_hashes[index]:
+                fail(f'{name}: installed timing@{index} was modified; preserve it and resolve manually')
+            updated = updated[:start] + updated[end:]
+        marker_line = '\t\t\t' + marker + '\n'
+        if updated.count(marker_line) != 1:
+            fail(f'{name}: unexpected high-refresh marker layout')
+        updated = updated.replace(marker_line, '', 1)
+        preference = re.compile(r'^\t\tqcom,mdss-dsi-preferred-refresh-rate = <(?:60|75)>;\n', re.M)
+        if 'qcom,mdss-dsi-preferred-refresh-rate' in updated:
+            updated, count = preference.subn('', updated)
+            if count != 1 or 'qcom,mdss-dsi-preferred-refresh-rate' in updated:
+                fail(f'{name}: custom preferred-refresh property; preserve it and resolve manually')
+    elif mode_ids != ['0']:
+        fail(f'{name}: unrecognized display timing nodes; preserve local changes and resolve manually')
+    changes[path] = (original, updated)
+
+    start, end, parent = node(central, rf'^&{label}\s*\{{')
+    if miuicx_installed:
+        ids = re.findall(r'^\t{2}timing@(\d+)\s*\{', parent, re.M)
+        if ids not in (['0'] + [str(i) for i in installed_indices],
+                       [str(i) for i in reversed(installed_indices)] + ['0']):
+            fail(f'{label}: unexpected MIUICX PHY timing nodes')
+        stock_phy = node(parent, r'^\t{2}timing@0\s*\{')[2]
+        for index in installed_indices:
+            left, right, content = node(parent, rf'^\t{{2}}timing@{index}\s*\{{')
+            if content != miuicx_phy(stock_phy, index):
+                fail(f'{label}: MIUICX PHY timing@{index} has local modifications')
+            parent = parent[:left] + parent[right:]
+    if evo_installed:
+        ids = re.findall(r'^\t{2}timing@(\d+)\s*\{', parent, re.M)
+        if ids != ['0'] + [str(i) for i in evo_indices]:
+            fail(f'{label}: unexpected Evolution-X PHY timing nodes')
+        for index in evo_indices:
+            left, right, content = node(parent, rf'^\t{{2}}timing@{index}\s*\{{')
+            if content != evo_phy(index):
+                fail(f'{label}: Evolution-X PHY timing@{index} has local modifications')
+            parent = parent[:left] + parent[right:]
+    parent_ids = re.findall(r'^\t{2}timing@(\d+)\s*\{', parent, re.M)
+    if any(index not in ('0', '1', '3') for index in parent_ids):
+        fail(f'{label}: unrecognized PHY timing nodes; preserve local changes and resolve manually')
+    if not installed and parent_ids != ['0']:
+        fail(f'{label}: PHY timing nodes lack the installed high-refresh marker; preserve local changes and resolve manually')
+    for index in (1, 3):
+        pattern = rf'^\t{{2}}timing@{index}\s*\{{'
+        if not re.search(pattern, parent, re.M):
+            continue
+        left, right, content = node(parent, pattern)
+        if digest(content) != phy_hashes[index]:
+            fail(f'{label}: installed PHY timing@{index} was modified; preserve it and resolve manually')
+        parent = parent[:left] + parent[right:]
+    central = central[:start] + parent + central[end:]
+changes[central_path] = (central_original, central)
+
+# The high-refresh port rewrote a continuous-splash preference block in two
+# successive versions. Reverse either exact reviewed variant before the rest.
+encoder_rules = driver_edits['drivers/gpu/drm/msm/sde/sde_encoder.c']
+legacy = next((new for old, new in encoder_rules if 'has_preferred_75' in new), None)
+if legacy is None:
+    fail('missing embedded splash migration rule')
+general = (legacy.replace('an explicit 75 Hz DSI preference', 'the DSI preferred mode')
+    .replace('has_preferred_75', 'has_preferred_mode')
+    .replace('candidate->vrefresh == 75 &&',
+             'candidate->hdisplay == drm_mode->hdisplay &&\n'
+             '\t\t\t    candidate->vdisplay == drm_mode->vdisplay &&'))
+if general == legacy or 'candidate->vrefresh == 75' in general:
+    fail('unexpected embedded splash migration rule')
+
+for name, replacements in driver_edits.items():
+    path = root / name
+    # The MIUICX port does not edit this binding. Some branch 17 trees use a
+    # different copy, so leave their documentation untouched.
+    if name == 'Documentation/devicetree/bindings/drm/msm/mdss-dsi-panel.txt':
+        continue
+    original = path.read_text()
+    updated = original
+    if name == 'drivers/gpu/drm/msm/sde/sde_encoder.c':
+        if general in updated:
+            if updated.count(general) != 1:
+                fail(f'{name}: multiple splash preference blocks')
+            updated = updated.replace(general, legacy, 1)
+    # Reverse in the opposite order: a few original edits overlapped.
+    for old, new in reversed(replacements):
+        if updated.count(new) == 1:
+            updated = updated.replace(new, old, 1)
+        elif updated.count(new) > 1:
+            fail(f'{name}: multiple copies of a high-refresh edit')
+        elif old not in updated:
+            fail(f'{name}: cannot safely reverse high-refresh edit; preserve local changes and resolve manually')
+    # Keep the independent bool-return correctness fix for failed mode lookups.
+    if name == 'drivers/gpu/drm/msm/dsi-staging/dsi_drm.c':
+        before = ('\trc = dsi_display_find_mode(display, &dsi_mode, &panel_dsi_mode);\n'
+                  '\tif (rc)\n\t\treturn rc;\n')
+        after = ('\trc = dsi_display_find_mode(display, &dsi_mode, &panel_dsi_mode);\n'
+                 '\tif (rc)\n\t\treturn false;\n')
+        if updated.count(before) == 1:
+            updated = updated.replace(before, after, 1)
+        elif updated.count(after) != 1:
+            fail(f'{name}: unexpected mode-lookup error handling')
+    changes[path] = (original, updated)
+
+# Remove mode-order edits left by earlier overclock builds.
+display_path = root / 'drivers/gpu/drm/msm/dsi-staging/dsi_display.c'
+display_original = display_path.read_text()
+display_updated = display_original
+mode_order_old = ('\t\t_dsi_display_populate_bit_clks(display, start, end, &array_idx);\n'
+                  '\t}\n\nexit:\n\t*out_modes = display->modes;\n')
+mode_order_new = '''\t\t_dsi_display_populate_bit_clks(display, start, end, &array_idx);
+\t}
+
+\t/* The MIUICX Raphael DTBO overlay prepends timing@2 and @1.
+\t * Sort only its exact 60/69/75 Hz mode set, so index zero remains
+\t * the stock 60 Hz mode regardless of the overlay implementation.
+\t */
+\t{
+\t\tconst u32 rates[] = { 60, 69, 75 };
+\t\tstruct dsi_display_mode temp;
+\t\tu32 preferred_rate;
+\t\tu32 j;
+
+\t\tif (!display->panel->utils.read_u32(display->panel->utils.data,
+\t\t\t\t"qcom,mdss-dsi-preferred-refresh-rate",
+\t\t\t\t&preferred_rate) && preferred_rate == 60) {
+\t\t\tif (array_idx != ARRAY_SIZE(rates)) {
+\t\t\t\trc = -EINVAL;
+\t\t\t\tgoto error;
+\t\t\t}
+\t\t\tfor (i = 0; i < (int)ARRAY_SIZE(rates); i++) {
+\t\t\t\tfor (j = i; j < ARRAY_SIZE(rates); j++)
+\t\t\t\t\tif (display->modes[j].timing.refresh_rate ==
+\t\t\t\t\t\t\trates[i])
+\t\t\t\t\t\tbreak;
+\t\t\t\tif (j == ARRAY_SIZE(rates)) {
+\t\t\t\t\trc = -EINVAL;
+\t\t\t\t\tgoto error;
+\t\t\t\t}
+\t\t\t\ttemp = display->modes[i];
+\t\t\t\tdisplay->modes[i] = display->modes[j];
+\t\t\t\tdisplay->modes[j] = temp;
+\t\t\t}
+\t\t}
+\t}
+
+exit:
+\t*out_modes = display->modes;
+'''
+mode_order_previous = (mode_order_new
+    .replace('The MIUICX Raphael DTBO overlay prepends timing@2 and @1.',
+             'The MIUICX Raphael DTBO overlay prepends timing@4 through @1.')
+    .replace('60/69/75 Hz mode set', '60/69/75/81/90 Hz mode set')
+    .replace('{ 60, 69, 75 }', '{ 60, 69, 75, 81, 90 }'))
+mode_order_legacy = (mode_order_previous
+    .replace('The MIUICX Raphael DTBO overlay prepends timing@4 through @1.',
+             'The reviewed Raphael DTBO overlay prepends timing@3, @2 and @1.')
+    .replace('60/69/75/81/90 Hz mode set', '60/72/81/90 Hz mode set')
+    .replace('{ 60, 69, 75, 81, 90 }', '{ 60, 72, 81, 90 }'))
+for installed_order in (mode_order_new, mode_order_previous, mode_order_legacy):
+    if display_updated.count(installed_order) == 1:
+        display_updated = display_updated.replace(installed_order, mode_order_old, 1)
+    elif display_updated.count(installed_order) > 1:
+        fail('multiple installed display mode order blocks')
+if display_updated.count(mode_order_old) != 1:
+    fail('cannot safely locate display mode order code')
+# An unsuccessful parse must not leave a freed mode cache for the next probe.
+cache_error_old = '\nerror:\n\tif (rc)\n\t\tkfree(display->modes);\n\n\tmutex_unlock(&display->display_lock);\n'
+cache_error_new = '\nerror:\n\tif (rc) {\n\t\tkfree(display->modes);\n\t\tdisplay->modes = NULL;\n\t}\n\n\tmutex_unlock(&display->display_lock);\n'
+if display_updated.count(cache_error_old) == 1:
+    display_updated = display_updated.replace(cache_error_old, cache_error_new, 1)
+elif display_updated.count(cache_error_new) != 1:
+    fail('cannot safely fix the display mode cache error path')
+changes[display_path] = (display_original, display_updated)
+
+for path, (original, updated) in changes.items():
+    if original != updated:
+        path.write_text(updated)
+output.mkdir(parents=True, exist_ok=True)
+report = output / 'display-modes.txt'
+report.write_text('Raphael display setup: stock 60 Hz panel timings.\n'
+                  'Rebuild the kernel and device tree before packaging.\n')
+print('Raphael display: stock 60 Hz timings prepared.')
+print(f'Display source report: {report}')
+PYDISPLAY
+}
+
+setup_raphael_display
 
 setup_rtl88x2bu() (
     local driver="$ROOT/drivers/net/wireless/realtek/rtl88x2bu"
