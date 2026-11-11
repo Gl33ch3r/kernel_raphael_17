@@ -857,8 +857,24 @@ oc_clockrate = 1650000000
 oc_transfer = 9189
 oc_ffc_old = 'E9 11 55 A6 75 A3 B9 A1 4A 00 1A B8'
 oc_ffc_new = 'E9 11 55 A6 75 A3 A9 A1 4A 00 1A B8'
+# A mode switch on this DDIC has to unlock the vendor test keys, rewrite the
+# internal porches (D1) and the MIPI/FFC speed (E9) and lock them again. Without
+# this command the driver's dynamic mode switch only reprograms the host: the
+# panel keeps its previous frame rate and the screen stays black after unlock.
+oc_switch = {
+    'dsi-panel-ss-fhd-ea8076-cmd.dtsi':
+        '39 00 00 00 00 00 03 F0 5A 5A 39 00 00 00 00 00 03 FC 5A 5A '
+        '39 00 00 00 00 00 02 B0 23 39 00 00 00 00 00 02 D1 0F '
+        '39 00 00 00 00 00 0C E9 11 55 A6 75 A3 A9 A1 4A 00 1A B8 '
+        '39 00 00 00 00 00 03 F0 A5 A5 39 01 00 00 00 00 03 FC A5 A5',
+    'dsi-panel-ss-fhd-ea8076-global-cmd.dtsi':
+        '39 00 00 00 00 00 03 F0 5A 5A 39 00 00 00 00 00 03 FC 5A 5A '
+        '39 00 00 00 00 00 02 B0 23 39 00 00 00 00 00 02 D1 11 '
+        '39 00 00 00 00 00 0C E9 11 55 A6 75 A3 A9 A1 4A 00 1A B8 '
+        '39 00 00 00 00 00 03 F0 A5 A5 39 01 00 00 00 00 03 FC A5 A5',
+}
 
-def oc_mode(stock):
+def oc_mode(name, stock):
     result, count = re.subn(r'timing@0(?=\s*\{)', 'timing@1', stock, count=1)
     if count != 1:
         fail('cannot locate the stock display timing node')
@@ -875,10 +891,19 @@ def oc_mode(stock):
     if result.count(oc_ffc_old) != 1:
         fail('cannot safely install the OCD 90 Hz FFC setting')
     result = result.replace(oc_ffc_old, oc_ffc_new, 1)
+    if 'qcom,mdss-dsi-timing-switch-command' in result:
+        fail('stock timing already has a timing-switch command')
     opening = result.index('{') + 1
-    return (result[:opening]
-            + f'\n\t\t\t\tqcom,mdss-mdp-transfer-time-us = <{oc_transfer}>;'
-            + result[opening:])
+    result = (result[:opening]
+              + f'\n\t\t\t\tqcom,mdss-mdp-transfer-time-us = <{oc_transfer}>;'
+              + result[opening:])
+    end = result.rfind('\t\t\t};')
+    if end < 0:
+        fail('cannot locate the OCD timing node end')
+    addition = ('\t\t\t\tqcom,mdss-dsi-timing-switch-command = ['
+                + oc_switch[name] + '];\n'
+                '\t\t\t\tqcom,mdss-dsi-timing-switch-command-state = "dsi_lp_mode";\n')
+    return result[:end] + addition + result[end:]
 
 def oc_phy(stock):
     result, count = re.subn(r'timing@0(?=\s*\{)', 'timing@1', stock, count=1)
@@ -954,7 +979,7 @@ for name, label in panels.items():
             fail(f'{name}: unexpected OCD timing nodes')
         stock = node(updated, r'^\t{3}timing@0\s*\{')[2]
         left, right, content = node(updated, r'^\t{3}timing@1\s*\{')
-        if content != oc_mode(stock):
+        if content != oc_mode(name, stock):
             fail(f'{name}: OCD timing@1 has local modifications')
         updated = updated[:left] + updated[right:]
         marker_line = '\t\t\t' + oc_marker + '\n'
@@ -1045,7 +1070,7 @@ if oc_display:
             fail(f'{name}: unexpected display timing nodes for the overclock')
         stock_start, stock_end, stock = node(updated, r'^\t{3}timing@0\s*\{')
         updated = (updated[:stock_end] + '\t\t\t' + oc_marker + '\n'
-                   + oc_mode(stock) + updated[stock_end:])
+                   + oc_mode(name, stock) + updated[stock_end:])
         changes[path] = (original, updated)
         start, end, parent = node(central, rf'^&{label}\s*\{{')
         if re.findall(r'^\t{2}timing@(\d+)\s*\{', parent, re.M) != ['0']:
