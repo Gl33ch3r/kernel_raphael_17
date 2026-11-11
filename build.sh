@@ -874,7 +874,7 @@ oc_switch = {
         '39 00 00 00 00 00 03 F0 A5 A5 39 01 00 00 00 00 03 FC A5 A5',
 }
 
-def oc_mode(name, stock):
+def oc_mode(name, stock, timing_switch=True):
     result, count = re.subn(r'timing@0(?=\s*\{)', 'timing@1', stock, count=1)
     if count != 1:
         fail('cannot locate the stock display timing node')
@@ -891,12 +891,14 @@ def oc_mode(name, stock):
     if result.count(oc_ffc_old) != 1:
         fail('cannot safely install the OCD 90 Hz FFC setting')
     result = result.replace(oc_ffc_old, oc_ffc_new, 1)
-    if 'qcom,mdss-dsi-timing-switch-command' in result:
+    if timing_switch and 'qcom,mdss-dsi-timing-switch-command' in result:
         fail('stock timing already has a timing-switch command')
     opening = result.index('{') + 1
     result = (result[:opening]
               + f'\n\t\t\t\tqcom,mdss-mdp-transfer-time-us = <{oc_transfer}>;'
               + result[opening:])
+    if not timing_switch:
+        return result
     end = result.rfind('\t\t\t};')
     if end < 0:
         fail('cannot locate the OCD timing node end')
@@ -979,7 +981,10 @@ for name, label in panels.items():
             fail(f'{name}: unexpected OCD timing nodes')
         stock = node(updated, r'^\t{3}timing@0\s*\{')[2]
         left, right, content = node(updated, r'^\t{3}timing@1\s*\{')
-        if content != oc_mode(name, stock):
+        # Earlier builds installed the 90 Hz node without a timing-switch
+        # command; accept that exact form so it can still be replaced or
+        # removed, while rejecting anything else.
+        if content not in (oc_mode(name, stock), oc_mode(name, stock, False)):
             fail(f'{name}: OCD timing@1 has local modifications')
         updated = updated[:left] + updated[right:]
         marker_line = '\t\t\t' + oc_marker + '\n'
