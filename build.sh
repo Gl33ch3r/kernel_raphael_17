@@ -359,6 +359,7 @@ for tool in make gcc g++ bc bison flex python3 perl pkg-config gzip; do
     command -v "$tool" >/dev/null 2>&1 || die "Missing host dependency: $tool (see ./build.sh --help)."
 done
 
+
 setup_rtl88x2bu() (
     local driver="$ROOT/drivers/net/wireless/realtek/rtl88x2bu"
     local revision=465ae7cb522a382adc85ea5c31f228af8d172148
