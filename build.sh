@@ -473,6 +473,12 @@ def main(arguments):
     if b'AVBf' in image[-64:]:
         raise ValueError('STOCK_DTBO_IMG is AVB-signed; rebuild against an unsigned '
                          'DTBO template or re-sign the rebuilt image')
+    # The reviewed ROM DTBO is verified above and never AVB-signed; any AVB magic
+    # after that check means the template was replaced, so re-verify against the
+    # pinned original before repacking.
+    if sha256(stock) != STOCK_HASH:
+        raise ValueError('STOCK_DTBO_IMG is AVB-signed; rebuild against an unsigned '
+                         'DTBO template or re-sign the rebuilt image')
     result = repack(image, blob, set(selected), table)
     check = parse_table(result)
     for index in sorted(selected):
