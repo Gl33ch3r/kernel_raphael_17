@@ -682,7 +682,7 @@ setup_raphael_display() {
     # replacing unrelated source files or requiring network/Git history.
     python3 - "$ROOT" "$OUT_DIR" "$WITH_OC_DISPLAY" <<'PYDISPLAY'
 from pathlib import Path
-import hashlib, json, re, sys
+import difflib, hashlib, json, re, sys
 
 root, output = map(Path, sys.argv[1:3])
 oc_display = sys.argv[3] == '1'
@@ -907,6 +907,23 @@ def oc_mode(name, stock, timing_switch=True):
                 '\t\t\t\tqcom,mdss-dsi-timing-switch-command-state = "dsi_lp_mode";\n')
     return result[:end] + addition + result[end:]
 
+def oc_normalized(content):
+    """Strip the decorations that different builds add around the same timing.
+
+    Earlier versions of this overclock wrote the 90 Hz node with and without
+    the MDP transfer budget and the panel timing-switch command. Compare the
+    timing itself so any of those installed forms can still be replaced or
+    removed, instead of demanding one exact spelling.
+    """
+    keep = []
+    for line in content.splitlines():
+        if 'qcom,mdss-dsi-timing-switch-command' in line:
+            continue
+        if 'qcom,mdss-mdp-transfer-time-us' in line:
+            continue
+        keep.append(line)
+    return '\n'.join(keep)
+
 def oc_phy(stock):
     result, count = re.subn(r'timing@0(?=\s*\{)', 'timing@1', stock, count=1)
     if count != 1:
@@ -981,11 +998,17 @@ for name, label in panels.items():
             fail(f'{name}: unexpected OCD timing nodes')
         stock = node(updated, r'^\t{3}timing@0\s*\{')[2]
         left, right, content = node(updated, r'^\t{3}timing@1\s*\{')
-        # Earlier builds installed the 90 Hz node without a timing-switch
-        # command; accept that exact form so it can still be replaced or
-        # removed, while rejecting anything else.
-        if content not in (oc_mode(name, stock), oc_mode(name, stock, False)):
-            fail(f'{name}: OCD timing@1 has local modifications')
+        # Accept every form this overclock has installed, while still refusing
+        # a node whose timing, commands or identity were edited by hand.
+        expected = oc_mode(name, stock, False)
+        if (oc_normalized(content) != oc_normalized(expected) or
+                content.count('qcom,mdss-mdp-transfer-time-us') > 1 or
+                content.count('qcom,mdss-dsi-timing-switch-command') > 2):
+            diff = list(difflib.unified_diff(
+                oc_mode(name, stock).splitlines(), content.splitlines(),
+                'expected timing@1', 'installed timing@1', n=1, lineterm=''))
+            fail(f'{name}: OCD timing@1 has local modifications\n'
+                 + '\n'.join(diff[:24]))
         updated = updated[:left] + updated[right:]
         marker_line = '\t\t\t' + oc_marker + '\n'
         if updated.count(marker_line) != 1:
