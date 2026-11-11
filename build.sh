@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # All-in-one Raphael branch 17 build: Boolx Clang 22, NetHunter, 88x2bu,
-# KernelSU-Next legacy, stock 60 Hz display, boot/DTBO packaging.
+# KernelSU-Next legacy, stock 60 Hz or reviewed 60/75/90 Hz display, boot/DTBO
+# packaging.
 set -Eeuo pipefail
 
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
@@ -16,6 +17,7 @@ Options:
   --nethunter    Enable the NetHunter kernel configuration profile
   --bootimg-only Package an existing compiled kernel using STOCK_BOOT_IMG
   --dtbo-only    Create a DTBO image using STOCK_DTBO_IMG
+  --oc-display   Package 6-20_dtbo_60-75-90.img as the display DTBO
   --wifi-diagnose Collect adapter diagnostics through adb
   --help, -h     Show this help
 Feature flags can be combined and may appear before or after make targets.
@@ -42,6 +44,7 @@ Examples:
   STOCK_BOOT_IMG=/path/to/working/boot.img ./build.sh
   STOCK_BOOT_IMG=/path/to/working/boot.img ./build.sh --bootimg-only
   STOCK_DTBO_IMG=/path/to/original/dtbo.img ./build.sh --dtbo-only
+  ./build.sh --dtbo-only --oc-display
 
 Debian/Ubuntu host dependencies:
   build-essential bc bison flex libssl-dev libelf-dev zlib1g-dev
@@ -54,19 +57,23 @@ Use a template from the same Raphael ROM. Its ramdisk and device trees are
 preserved. magiskboot is downloaded automatically; MAGISKBOOT can override it.
 ROM-specific image signing is separate.
 DTBO packaging copies the reviewed original LineageOS 17 Raphael image byte for
-byte into out/dtbo.img.
+byte into out/dtbo.img. --oc-display packages 6-20_dtbo_60-75-90.img unchanged; it
+is the only source of the 60/75/90 Hz display modes. 60 Hz stays preferred and
+75/90 Hz are only selectable where the running vendor display stack supports the
+switch.
 EOF
 }
 
 WITH_KSU=0
 WITH_NETHUNTER=0
+WITH_OC_DISPLAY=0
 MODE=build
 make_options=()
 while (( $# )); do
     case "$1" in
         --ksu) WITH_KSU=1 ;;
         --nethunter) WITH_NETHUNTER=1 ;;
-        --oc-display) die 'The 90 Hz OCD overclock was removed. Build with stock 60 Hz timings.' ;;
+        --oc-display) WITH_OC_DISPLAY=1 ;;
         --high-refresh) die 'The high-refresh overclock was removed. Build with stock 60 Hz timings.' ;;
         --rom-dtbo-patch) die '--rom-dtbo-patch was removed; use the original ROM DTBO with --dtbo-only.' ;;
         --help|-h) show_help; exit 0 ;;
@@ -84,6 +91,9 @@ if [[ $MODE != build ]]; then
     (( WITH_KSU == 0 && WITH_NETHUNTER == 0 )) ||
         die '--ksu and --nethunter require a build; they cannot change an already compiled kernel or run diagnostics.'
     (( $# == 0 )) || die "--$MODE does not accept make targets/options."
+fi
+if (( WITH_OC_DISPLAY )) && [[ $MODE == bootimg-only ]]; then
+    die '--oc-display packages a DTBO; use it with --dtbo-only or a build.'
 fi
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
@@ -165,7 +175,7 @@ with open(sys.argv[1], 'rb') as f:
 PY
 fi
 
-if [[ $MODE == dtbo-only && -z ${STOCK_DTBO_IMG:-} ]]; then
+if [[ $MODE == dtbo-only && -z ${STOCK_DTBO_IMG:-} ]] && (( WITH_OC_DISPLAY == 0 )); then
     die 'Set STOCK_DTBO_IMG to a working dtbo.img from the same Raphael ROM.'
 fi
 if [[ -n ${STOCK_DTBO_IMG:-} ]]; then
@@ -217,6 +227,126 @@ with tempfile.TemporaryDirectory(prefix='.stock-dtbo-', dir=output.parent) as wo
     os.replace(result, output)
 print(f'Original ROM DTBO copied unchanged: {output}')
 PYSTOCKDTBO
+)
+
+pack_oc_dtbo_image() (
+    command -v python3 >/dev/null 2>&1 || die 'python3 is required.'
+    local OC_IMAGE=$ROOT/6-20_dtbo_60-75-90.img
+    [[ -s $OC_IMAGE ]] || die "Missing display DTBO: $OC_IMAGE"
+    OC_IMAGE=$(realpath -- "$OC_IMAGE")
+    python3 - "$OC_IMAGE" "$OUT_DIR/dtbo.img" <<'PYOCDTBO'
+"""Install the reviewed Raphael 60/75/90 Hz display DTBO unmodified."""
+import hashlib
+import os
+import pathlib
+import struct
+import sys
+import tempfile
+
+source, output = map(pathlib.Path, sys.argv[1:3])
+reviewed_hash = 'bebf0da030dcf433ff2a2e633fbd56f89215244e1f2f73735e1798422fc17664'
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1048576), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+if source == output or (output.exists() and os.path.samefile(source, output)):
+    sys.exit('Error: DTBO output must differ from the reviewed image.')
+raw = source.read_bytes()
+if sha256(source) != reviewed_hash:
+    sys.exit('Error: 6-20_dtbo_60-75-90.img is not the reviewed display DTBO.')
+if len(raw) < 64:
+    sys.exit('Error: truncated DTBO image.')
+magic, total, header_size, entry_size, count, entries, page_size, version = \
+    struct.unpack('>8I', raw[:32])
+if magic != 0xd7b7ab1e or version not in (0, 1) or total != len(raw):
+    sys.exit('Error: 6-20_dtbo_60-75-90.img is not a complete Android DTBO table image.')
+if header_size != 32 or count != 1 or entries + entry_size > len(raw):
+    sys.exit('Error: expected exactly one Raphael device tree in the DTBO.')
+size, offset = struct.unpack('>2I', raw[entries:entries + 8])
+if offset < header_size or offset + size > len(raw):
+    sys.exit('Error: the DTBO entry points outside the image.')
+fdt = raw[offset:offset + size]
+fdt_magic, fdt_size, struct_offset, strings_offset = struct.unpack('>4I', fdt[:16])
+if fdt_magic != 0xd00dfeed or fdt_size != size:
+    sys.exit('Error: the DTBO entry is not a device tree blob.')
+size_strings = struct.unpack('>I', fdt[32:36])[0]
+strings = fdt[strings_offset:strings_offset + size_strings]
+pos = struct_offset
+stack = []
+current = '/'
+model = None
+modes = {}
+while True:
+    if pos + 4 > len(fdt):
+        sys.exit('Error: truncated device tree in the reviewed DTBO.')
+    token = struct.unpack('>I', fdt[pos:pos + 4])[0]
+    pos += 4
+    if token == 1:
+        end = fdt.index(b'\0', pos)
+        name = fdt[pos:end].decode()
+        pos = (end + 4) & ~3
+        if not stack:
+            stack.append('/')
+        elif name:
+            stack.append(stack[-1].rstrip('/') + '/' + name)
+        current = stack[-1]
+        if name.startswith('timing'):
+            modes[current] = {}
+    elif token == 2:
+        if len(stack) > 1:
+            stack.pop()
+        current = stack[-1] if stack else '/'
+    elif token == 3:
+        length, name_offset = struct.unpack('>II', fdt[pos:pos + 8])
+        pos += 8
+        value = fdt[pos:pos + length]
+        pos = (pos + length + 3) & ~3
+        end = strings.index(b'\0', name_offset)
+        prop = strings[name_offset:end].decode()
+        if prop == 'model':
+            model = value.rstrip(b'\0').decode()
+        elif current in modes and len(value) == 4:
+            if prop == 'qcom,mdss-dsi-panel-framerate':
+                modes[current]['fps'] = struct.unpack('>I', value)[0]
+        if current in modes and prop == 'qcom,mdss-dsi-timing-switch-command':
+            modes[current]['switch'] = True
+    elif token == 4:
+        continue
+    elif token == 9:
+        break
+    else:
+        sys.exit('Error: corrupt device tree in the reviewed DTBO.')
+
+if model != 'RAPHAEL':
+    sys.exit('Error: the reviewed DTBO does not target Raphael.')
+# Only the EA8076 command-mode panels carry the Raphael display modes; the
+# simulated panels elsewhere in the overlay are not runtime-switchable.
+panels = {path_: mode for path_, mode in modes.items() if 'ea8076' in path_}
+if not panels:
+    sys.exit('Error: the reviewed DTBO has no EA8076 display timings.')
+rates = sorted({mode['fps'] for mode in panels.values() if mode.get('fps')})
+if not {60, 75, 90}.issubset(rates):
+    sys.exit('Error: expected 60/75/90 Hz EA8076 timings, found %s.'
+             % '/'.join(str(rate) for rate in rates))
+for path_, mode in panels.items():
+    if mode.get('fps', 0) > 60 and not mode.get('switch'):
+        sys.exit('Error: %s has no timing-switch command.' % path_)
+
+output.parent.mkdir(parents=True, exist_ok=True)
+with tempfile.TemporaryDirectory(prefix='.oc-dtbo-', dir=output.parent) as work:
+    result = pathlib.Path(work) / 'dtbo.img'
+    result.write_bytes(raw)
+    if sha256(result) != reviewed_hash:
+        sys.exit('Error: DTBO copy failed its SHA-256 check.')
+    os.replace(result, output)
+print('6-20_dtbo_60-75-90.img installed: %s' % output)
+print('Display timings in the overlay: %s Hz; 60 Hz remains preferred.'
+      % '/'.join(str(rate) for rate in rates))
+PYOCDTBO
 )
 
 make_boot_image() (
@@ -301,7 +431,11 @@ if (( BOOTIMG_ONLY )); then
     exit 0
 fi
 if [[ $MODE == dtbo-only ]]; then
-    pack_dtbo_image
+    if (( WITH_OC_DISPLAY )); then
+        pack_oc_dtbo_image
+    else
+        pack_dtbo_image
+    fi
     exit 0
 fi
 
@@ -1395,7 +1529,9 @@ else
     printf 'To package the compiled kernel, run:\n'
     printf '  STOCK_BOOT_IMG=/absolute/path/to/working/boot.img ./build.sh --bootimg-only\n'
 fi
-if [[ -n ${STOCK_DTBO_IMG:-} ]]; then
+if (( WITH_OC_DISPLAY )); then
+    pack_oc_dtbo_image
+elif [[ -n ${STOCK_DTBO_IMG:-} ]]; then
     pack_dtbo_image
 else
     printf '\nDisplay device tree: %s/arch/arm64/boot/dts/qcom/raphael-sm8150-overlay.dtbo\n' "$OUT_DIR"
@@ -1408,4 +1544,5 @@ else
         fi
     fi
     printf 'To copy the original stock DTBO, set STOCK_DTBO_IMG and run ./build.sh --dtbo-only.\n'
+    printf 'To package the reviewed 60/75/90 Hz display DTBO, run ./build.sh --dtbo-only --oc-display.\n'
 fi
